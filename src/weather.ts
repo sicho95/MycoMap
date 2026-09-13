@@ -43,7 +43,7 @@ function normalizeWeather(data: any, at: Date): WeatherSnapshot {
   };
 }
 
-export async function fetchCurrentWeather(lat: number, lon: number): Promise<WeatherSnapshot> {
+async function fetchRecentWeather(lat: number, lon: number, at: Date): Promise<WeatherSnapshot> {
   const params = new URLSearchParams({
     latitude: lat.toFixed(5),
     longitude: lon.toFixed(5),
@@ -55,15 +55,16 @@ export async function fetchCurrentWeather(lat: number, lon: number): Promise<Wea
   });
   const response = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`);
   if (!response.ok) throw new Error('Météo indisponible');
-  return normalizeWeather(await response.json(), new Date());
+  return normalizeWeather(await response.json(), at);
+}
+
+export function fetchCurrentWeather(lat: number, lon: number) {
+  return fetchRecentWeather(lat, lon, new Date());
 }
 
 export async function fetchWeatherForDate(lat: number, lon: number, date: Date): Promise<WeatherSnapshot> {
   const ageDays = Math.abs(Date.now() - date.getTime()) / 86400000;
-  if (ageDays <= 28) {
-    const current = await fetchCurrentWeather(lat, lon);
-    return { ...current, date: date.toISOString() };
-  }
+  if (ageDays <= 28) return fetchRecentWeather(lat, lon, date);
 
   const start = new Date(date);
   start.setDate(start.getDate() - 30);
