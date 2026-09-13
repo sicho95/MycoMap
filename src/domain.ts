@@ -2,7 +2,11 @@ export type Species = 'cepes' | 'girolles' | 'morilles';
 export type ObservationOutcome = 'found' | 'none';
 export type ThemeMode = 'auto' | 'light' | 'dark';
 
-export interface LatLng { lat: number; lon: number }
+export interface LatLng {
+  lat: number;
+  lon: number;
+  [key: string]: unknown;
+}
 
 export interface WeatherSnapshot {
   date: string;
