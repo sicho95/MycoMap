@@ -300,7 +300,7 @@ export default function App() {
       if (!id) return;
       setSelectedId(String(id));
       setPickedLocation(null);
-      setSheet('data');
+      setSheet(null);
     };
     map.on('click', 'potential-point', selectPotential);
     map.on('click', 'potential-area', selectPotential);
@@ -459,7 +459,6 @@ export default function App() {
   }
 
   function closeSheet() {
-    if (sheet === 'data') setSelectedId(null);
     setSheet(null);
   }
 
