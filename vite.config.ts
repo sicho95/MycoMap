@@ -2,11 +2,15 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
+const base = '/MycoMap/';
+
 export default defineConfig({
+  base,
   plugins: [
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      includeAssets: ['icon.svg'],
       manifest: {
         name: 'MycoMap',
         short_name: 'MycoMap',
@@ -15,9 +19,10 @@ export default defineConfig({
         background_color: '#101512',
         display: 'standalone',
         orientation: 'portrait-primary',
-        start_url: '/',
+        start_url: base,
+        scope: base,
         icons: [
-          { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }
+          { src: `${base}icon.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }
         ]
       }
     })
