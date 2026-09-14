@@ -76,6 +76,8 @@ export interface Observation extends LatLng {
   observedAt: string;
   source: 'gps' | 'map' | 'photo';
   photoName?: string;
+  photoStored?: boolean;
+  pendingEnrichment?: boolean;
   note?: string;
   weather?: WeatherSnapshot;
   conditionScore?: number;
