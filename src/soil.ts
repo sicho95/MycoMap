@@ -87,6 +87,16 @@ async function fetchCoverage(key: SoilKey, bbox: ReturnType<typeof bboxAround>):
   }
 }
 
+function validateScaledValue(key: SoilKey, value: number): number | null {
+  if (!Number.isFinite(value)) return null;
+  if (key === 'phh2o') return value >= 2 && value <= 14 ? value : null;
+  if (key === 'clay' || key === 'sand' || key === 'silt' || key === 'cfvo') {
+    return value >= 0 && value <= 100 ? value : null;
+  }
+  if (key === 'wv0033' || key === 'wv1500') return value >= 0 && value <= 100 ? value : null;
+  return null;
+}
+
 function sampleRaster(raster: SoilRaster, point: LatLng): number | null {
   const [minX, minY, maxX, maxY] = raster.bbox;
   if (point.lon < minX || point.lon > maxX || point.lat < minY || point.lat > maxY) return null;
@@ -98,7 +108,7 @@ function sampleRaster(raster: SoilRaster, point: LatLng): number | null {
   if (!Number.isFinite(raw)) return null;
   if (raster.noData != null && raw === raster.noData) return null;
   if (raw <= -30000) return null;
-  return raw / PROPERTY_SCALE[raster.key];
+  return validateScaledValue(raster.key, raw / PROPERTY_SCALE[raster.key]);
 }
 
 function classifyTexture(sand: number | null, silt: number | null, clay: number | null): SoilTextureClass {
@@ -140,15 +150,32 @@ function makeProfile(point: LatLng, rasters: Map<SoilKey, SoilRaster>): SoilProf
     const raster = rasters.get(key);
     return raster ? sampleRaster(raster, point) : null;
   };
+
   const ph = get('phh2o');
-  const clay = get('clay');
-  const sand = get('sand');
-  const silt = get('silt');
+  let clay = get('clay');
+  let sand = get('sand');
+  let silt = get('silt');
   const coarse = get('cfvo');
   const fieldCapacity = get('wv0033');
   const wilting = get('wv1500');
-  const availableWater = fieldCapacity != null && wilting != null ? Math.max(0, fieldCapacity - wilting) : null;
-  if ([ph, clay, sand, silt].every((value) => value == null)) return undefined;
+
+  // Un triplet 0/0/0 (ou très loin de 100 %) correspond à une cellule invalide/no-data,
+  // pas à un vrai sol. On l'écarte au lieu de fabriquer une texture "équilibrée".
+  if (clay != null && sand != null && silt != null) {
+    const mineralSum = clay + sand + silt;
+    if (mineralSum < 70 || mineralSum > 130) {
+      clay = null;
+      sand = null;
+      silt = null;
+    }
+  }
+
+  const availableWater = fieldCapacity != null && wilting != null && fieldCapacity >= wilting
+    ? fieldCapacity - wilting
+    : null;
+
+  if (ph == null && clay == null && sand == null && silt == null) return undefined;
+
   const drainage = estimateDrainage(sand, clay, coarse, availableWater);
   return {
     ph: ph == null ? null : Math.round(ph * 10) / 10,
