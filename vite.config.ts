@@ -27,7 +27,7 @@ export default defineConfig({
     versionFilePlugin,
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icon.svg', 'apple-touch-icon.png'],
+      includeAssets: ['icon.svg', 'apple-touch-icon-v3.png', 'icon-192.png', 'icon-512.png'],
       workbox: {
         cleanupOutdatedCaches: true,
         clientsClaim: true,
@@ -62,8 +62,9 @@ export default defineConfig({
         scope: base,
         lang: 'fr',
         icons: [
-          { src: `${base}apple-touch-icon.png?v=20260914-2`, sizes: '180x180', type: 'image/png', purpose: 'any' },
-          { src: `${base}icon.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }
+          { src: `${base}icon-192.png`, sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: `${base}icon-512.png`, sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: `${base}icon-512.png`, sizes: '512x512', type: 'image/png', purpose: 'maskable' }
         ]
       }
     })
