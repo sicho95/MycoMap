@@ -52,6 +52,7 @@ export interface WeatherSnapshot {
   rain84?: number;
   maxRainEvent30?: number;
   airTemp7: number | null;
+  airTemp14?: number | null;
   airTemp20?: number | null;
   /** Somme des degrés-jours de l'air >5 °C sur 84 jours : proxy d'accumulation thermique. */
   gdd84Base5?: number | null;
@@ -96,6 +97,7 @@ export interface PotentialPoint extends ForestZone {
   terrainScore: number;
   soilScore: number;
   habitatScore: number;
+  seasonScore: number;
   conditionScore: number;
   personalCorrection: number;
   finalScore: number;
