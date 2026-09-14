@@ -15,7 +15,22 @@ export default defineConfig({
         cleanupOutdatedCaches: true,
         clientsClaim: true,
         skipWaiting: true,
-        navigateFallback: `${base}index.html`
+        navigateFallback: `${base}index.html`,
+        runtimeCaching: [
+          {
+            urlPattern: /^https:\/\/data\.geopf\.fr\/wmts/i,
+            handler: 'StaleWhileRevalidate',
+            options: {
+              cacheName: 'mycomap-ign-tiles-v1',
+              cacheableResponse: { statuses: [0, 200] },
+              expiration: {
+                maxEntries: 900,
+                maxAgeSeconds: 30 * 24 * 60 * 60,
+                purgeOnQuotaError: true
+              }
+            }
+          }
+        ]
       },
       manifest: {
         name: 'MycoMap',
