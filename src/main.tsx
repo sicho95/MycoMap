@@ -7,6 +7,12 @@ import App from './App';
 
 declare const __MYCOMAP_BUILD_ID__: string;
 
+declare global {
+  interface Navigator {
+    standalone?: boolean;
+  }
+}
+
 let applyUpdate: (reloadPage?: boolean) => Promise<void> = async () => {};
 let activeRegistration: ServiceWorkerRegistration | undefined;
 let updateInProgress = false;
@@ -15,12 +21,28 @@ let reloadScheduled = false;
 const UPDATE_CHECK_MS = 45_000;
 const UPDATE_GRACE_MS = 3_500;
 const TILE_CACHE_NAME = 'mycomap-ign-tiles-v1';
+const FORCED_BUILD_KEY = 'mycomap:last-forced-build';
+const IS_STANDALONE = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+function compactBuildId(buildId: string) {
+  return buildId.replace(/[^0-9A-Za-z]/g, '').slice(0, 18);
+}
 
 function buildReloadUrl(remoteBuildId: string) {
   const url = new URL(import.meta.env.BASE_URL, window.location.origin);
-  url.searchParams.set('__mycomap_build', remoteBuildId.replace(/[^0-9A-Za-z]/g, '').slice(0, 18));
+  url.searchParams.set('__mycomap_build', compactBuildId(remoteBuildId));
   url.searchParams.set('__network', String(Date.now()));
   return url.toString();
+}
+
+function alreadyForcedFor(remoteBuildId: string) {
+  const compact = compactBuildId(remoteBuildId);
+  const urlBuild = new URL(window.location.href).searchParams.get('__mycomap_build');
+  return urlBuild === compact || localStorage.getItem(FORCED_BUILD_KEY) === remoteBuildId;
+}
+
+function markForcedBuild(remoteBuildId: string) {
+  localStorage.setItem(FORCED_BUILD_KEY, remoteBuildId);
 }
 
 function waitForControllerChange(timeoutMs = UPDATE_GRACE_MS) {
@@ -88,11 +110,12 @@ async function unregisterMycoMapWorkers() {
 }
 
 async function emergencyNetworkReload(remoteBuildId: string) {
-  if (reloadScheduled) return;
+  if (!IS_STANDALONE || reloadScheduled || alreadyForcedFor(remoteBuildId)) return;
   reloadScheduled = true;
+  markForcedBuild(remoteBuildId);
 
-  // Important : on ne touche jamais à IndexedDB ni à localStorage ici.
-  // Les sorties, photos, coins et caches métier restent donc intacts.
+  // On ne touche jamais à IndexedDB ni à localStorage utilisateur.
+  // Les sorties, photos, coins et caches métier restent intacts.
   await Promise.allSettled([
     unregisterMycoMapWorkers(),
     removeOnlyAppShellCaches()
@@ -106,26 +129,35 @@ async function activatePublishedBuild(remoteBuildId: string, registration = acti
   updateInProgress = true;
 
   try {
+    // Dans Safari normal, on laisse uniquement le cycle standard du service worker
+    // se faire. Aucun rechargement automatique agressif : cela évite toute boucle.
+    if (!IS_STANDALONE) {
+      await registration?.update().catch(() => undefined);
+      await applyUpdate(false).catch(() => undefined);
+      return;
+    }
+
+    // Une même version distante ne peut provoquer qu'un seul rechargement forcé.
+    if (alreadyForcedFor(remoteBuildId)) {
+      await registration?.update().catch(() => undefined);
+      return;
+    }
+
     const controllerChange = waitForControllerChange();
 
     await registration?.update().catch(() => undefined);
     const waitingWorker = await waitForWaitingWorker(registration);
     waitingWorker?.postMessage({ type: 'SKIP_WAITING' });
-
-    // Le helper vite-plugin-pwa reste utile sur les navigateurs qui gèrent
-    // correctement le cycle de vie standard du service worker.
     await applyUpdate(false).catch(() => undefined);
 
     const changed = await controllerChange;
     if (changed) {
+      markForcedBuild(remoteBuildId);
       reloadScheduled = true;
       window.location.replace(buildReloadUrl(remoteBuildId));
       return;
     }
 
-    // Safari/iOS peut conserver l'ancien worker malgré update/skipWaiting.
-    // On retire alors uniquement le worker + precache d'interface, jamais les
-    // données utilisateur, puis on recharge directement depuis le réseau.
     await emergencyNetworkReload(remoteBuildId);
   } finally {
     if (!reloadScheduled) updateInProgress = false;
@@ -142,7 +174,14 @@ async function checkPublishedVersion(registration = activeRegistration) {
     });
     if (!response.ok) return;
     const published = await response.json() as { buildId?: string };
-    if (!published.buildId || published.buildId === __MYCOMAP_BUILD_ID__) return;
+    if (!published.buildId) return;
+
+    if (published.buildId === __MYCOMAP_BUILD_ID__) {
+      // La bonne version est enfin active : on réarme le mécanisme pour la prochaine release.
+      localStorage.removeItem(FORCED_BUILD_KEY);
+      return;
+    }
+
     await activatePublishedBuild(published.buildId, registration);
   } catch {
     // Réseau instable : on conserve la version courante et on réessaiera plus tard.
@@ -152,8 +191,8 @@ async function checkPublishedVersion(registration = activeRegistration) {
 applyUpdate = registerSW({
   immediate: true,
   onNeedRefresh() {
-    // Un update normal peut arriver avant le contrôle version.json.
-    // On demande l'activation, sans effacer la moindre donnée locale.
+    // Activation silencieuse. Le rechargement éventuel est piloté par le contrôle
+    // versionné ci-dessus et seulement en mode PWA standalone.
     void applyUpdate(false);
   },
   onRegisteredSW(_swUrl, registration) {
@@ -172,9 +211,6 @@ applyUpdate = registerSW({
   }
 });
 
-// Important sur iOS/PWA : on ne modifie plus manuellement la hauteur ou la
-// largeur de la carte après le rendu. Le conteneur CSS reste fixé à l'écran et
-// MapLibre recalcule simplement son canvas à partir de sa taille réelle.
 const nudgeMapResize = () => {
   requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
 };
