@@ -47,7 +47,11 @@ export interface WeatherSnapshot {
   rain7: number;
   rain14: number;
   rain30: number;
+  /** Fenêtre longue utilisée pour le signal de fructification. Optionnelle pour les anciens caches. */
+  rain26?: number;
   airTemp7: number | null;
+  /** Température moyenne sur 20 jours. Optionnelle pour les anciens caches. */
+  airTemp20?: number | null;
   soilTemp: number | null;
   soilMoisture: number | null;
 }
