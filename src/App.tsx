@@ -33,7 +33,7 @@ import { distanceMeters, scoreColor, scoreConditions, scoreLabel, scoreZone } fr
 import { fetchCurrentWeather, fetchWeatherForDate } from './weather';
 
 const FALLBACK: LatLng = { lat: 48.78, lon: 2.26 };
-const IGN_PLAN_TILE = 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/png';
+const IGN_PLAN_TILE = 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM&TILEROW={y}&TILECOL={x}&TILEMATRIX={z}&FORMAT=image/png';
 const VIEWPORT_RELOAD_DISTANCE_METERS = 4500;
 const AREA_RADIUS_METERS = 25000;
 
@@ -48,6 +48,13 @@ type Draft = {
   source: Observation['source'];
   photoName?: string;
   photoFile?: File;
+};
+
+type ViewportBounds = {
+  west: number;
+  south: number;
+  east: number;
+  north: number;
 };
 
 const baseStyle: maplibregl.StyleSpecification = {
@@ -144,16 +151,26 @@ function sameDay(a: Date, b: Date) {
   return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10);
 }
 
+function pointInBounds(point: LatLng, bounds: ViewportBounds | null) {
+  if (!bounds) return true;
+  const lonInside = bounds.west <= bounds.east
+    ? point.lon >= bounds.west && point.lon <= bounds.east
+    : point.lon >= bounds.west || point.lon <= bounds.east;
+  return lonInside && point.lat >= bounds.south && point.lat <= bounds.north;
+}
+
 export default function App() {
   const mapNode = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const photoInput = useRef<HTMLInputElement | null>(null);
   const loadedCenterRef = useRef<LatLng>(FALLBACK);
   const observationsRef = useRef<Observation[]>([]);
+  const loadRequestRef = useRef(0);
 
   const [species, setSpecies] = useState<Species>('cepes');
   const [theme, setTheme] = useState<ThemeMode>(() => loadTheme());
   const [position, setPosition] = useState<LatLng>(FALLBACK);
+  const [viewportBounds, setViewportBounds] = useState<ViewportBounds | null>(null);
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
   const [zones, setZones] = useState<Awaited<ReturnType<typeof fetchForestZones>>>([]);
   const [observations, setObservations] = useState<Observation[]>(() => loadObservations());
@@ -175,12 +192,18 @@ export default function App() {
     return zones.map((zone) => scoreZone(species, zone, weather, observations));
   }, [zones, weather, species, observations]);
 
+  const visiblePotentials = useMemo(
+    () => potentials.filter((item) => pointInBounds(item, viewportBounds)),
+    [potentials, viewportBounds]
+  );
+
   const selected = useMemo(() => potentials.find((item) => item.id === selectedId) ?? null, [potentials, selectedId]);
 
   const dataTarget = useMemo(() => {
     if (selected) return selected;
-    if (!potentials.length) return null;
-    return potentials.reduce((closest, candidate) =>
+    const nearby = potentials.filter((candidate) => distanceMeters(candidate, position) <= 12000);
+    if (!nearby.length) return null;
+    return nearby.reduce((closest, candidate) =>
       distanceMeters(candidate, position) < distanceMeters(closest, position) ? candidate : closest
     );
   }, [selected, potentials, position]);
@@ -266,7 +289,9 @@ export default function App() {
       map.addSource('picked', { type: 'geojson', data: pointGeojson([]) });
       map.addLayer({ id: 'picked', type: 'circle', source: 'picked', paint: { 'circle-radius': 9, 'circle-color': '#ffffff', 'circle-stroke-width': 3, 'circle-stroke-color': '#d61536' } });
       const center = map.getCenter();
+      const bounds = map.getBounds();
       setPosition({ lat: center.lat, lon: center.lng });
+      setViewportBounds({ west: bounds.getWest(), south: bounds.getSouth(), east: bounds.getEast(), north: bounds.getNorth() });
       setMapReady(true);
     });
 
@@ -316,6 +341,7 @@ export default function App() {
   }, [pickedLocation, mapReady]);
 
   async function loadArea(target: LatLng, fly = true, force = false) {
+    const requestId = ++loadRequestRef.current;
     setLoading(true);
     setNotice(null);
     setPosition(target);
@@ -324,6 +350,7 @@ export default function App() {
     if (fly) mapRef.current?.flyTo({ center: [target.lon, target.lat], zoom: 11.2, duration: 700 });
 
     const cached = await getCachedArea(target);
+    if (requestId !== loadRequestRef.current) return;
     if (cached) {
       setZones(cached.zones);
       if (cached.weather) setWeather(cached.weather);
@@ -337,14 +364,14 @@ export default function App() {
         setWeather(null);
         setNotice('Hors ligne : cette zone n’est pas encore en cache. Tu peux quand même enregistrer une sortie ou une photo.');
       }
-      setLoading(false);
+      if (requestId === loadRequestRef.current) setLoading(false);
       return;
     }
 
     const staticFresh = !force && !!cached && isFresh(cached.staticUpdatedAt, STATIC_CACHE_MAX_AGE_MS);
     const weatherFresh = !force && !!cached?.weather && isFresh(cached.weatherUpdatedAt, WEATHER_CACHE_MAX_AGE_MS);
     if (staticFresh && weatherFresh) {
-      setLoading(false);
+      if (requestId === loadRequestRef.current) setLoading(false);
       return;
     }
 
@@ -352,6 +379,8 @@ export default function App() {
       staticFresh && cached ? Promise.resolve(cached.zones) : fetchForestZones(target, AREA_RADIUS_METERS),
       weatherFresh && cached?.weather ? Promise.resolve(cached.weather) : fetchCurrentWeather(target.lat, target.lon, force)
     ]);
+
+    if (requestId !== loadRequestRef.current) return;
 
     const nextZones = zoneResult.status === 'fulfilled' ? zoneResult.value : cached?.zones ?? [];
     const nextWeather = weatherResult.status === 'fulfilled' ? weatherResult.value : cached?.weather ?? null;
@@ -371,13 +400,14 @@ export default function App() {
         staticUpdatedAt,
         weatherUpdatedAt
       });
+      if (requestId !== loadRequestRef.current) return;
       setCacheUpdatedAt(Math.max(staticUpdatedAt, weatherUpdatedAt ?? 0));
     }
 
     if (!nextZones.length || !nextWeather) {
       setNotice(cached ? 'Réseau incomplet : les dernières données en cache restent affichées.' : 'Impossible de charger toutes les données de cette zone.');
     }
-    setLoading(false);
+    if (requestId === loadRequestRef.current) setLoading(false);
   }
 
   useEffect(() => {
@@ -387,9 +417,11 @@ export default function App() {
     let timer: number | undefined;
     const onMoveEnd = () => {
       const center = map.getCenter();
+      const bounds = map.getBounds();
       const target = { lat: center.lat, lon: center.lng };
       setPosition(target);
-      if (loading || distanceMeters(loadedCenterRef.current, target) < VIEWPORT_RELOAD_DISTANCE_METERS) return;
+      setViewportBounds({ west: bounds.getWest(), south: bounds.getSouth(), east: bounds.getEast(), north: bounds.getNorth() });
+      if (distanceMeters(loadedCenterRef.current, target) < VIEWPORT_RELOAD_DISTANCE_METERS) return;
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(() => void loadArea(target, false), 450);
     };
@@ -398,7 +430,7 @@ export default function App() {
       if (timer) window.clearTimeout(timer);
       map.off('moveend', onMoveEnd);
     };
-  }, [mapReady, loading]);
+  }, [mapReady]);
 
   useEffect(() => {
     navigator.geolocation?.getCurrentPosition(
@@ -534,7 +566,7 @@ export default function App() {
     setObservations((current) => current.filter((item) => item.id !== id));
   }
 
-  const topScore = potentials.length ? Math.max(...potentials.map((item) => item.finalScore)) : null;
+  const topScore = visiblePotentials.length ? Math.max(...visiblePotentials.map((item) => item.finalScore)) : null;
   const cacheLabel = cacheUpdatedAt ? formatCacheAge(cacheUpdatedAt) : null;
 
   return (
@@ -564,10 +596,12 @@ export default function App() {
         <button className="map-button glass" onClick={refreshVisibleArea} aria-label="Forcer l’actualisation"><RefreshCw className={loading ? 'spin' : ''} size={20} /></button>
       </div>
 
-      {topScore != null && !selected && (
+      {!selected && (topScore != null || loading) && (
         <div className="status-pill glass">
-          <span className="status-dot" style={{ background: scoreColor(topScore) }} />
-          {!isOnline ? 'Hors ligne · cache' : loading ? 'Actualisation' : 'IGN · meilleur secteur'} : <b>{topScore}/100</b>
+          <span className="status-dot" style={{ background: topScore != null ? scoreColor(topScore) : '#8b968f' }} />
+          {topScore == null
+            ? (loading ? 'Analyse de cette zone…' : 'Aucun secteur visible')
+            : <>{!isOnline ? 'Hors ligne · écran' : loading ? 'Actualisation · écran' : 'Meilleur secteur visible'} : <b>{topScore}/100</b></>}
         </div>
       )}
 
