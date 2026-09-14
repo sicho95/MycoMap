@@ -1,4 +1,5 @@
 import type { ForestGeometry, ForestZone, LatLng } from './domain';
+import { enrichZonesWithSoil } from './soil';
 
 const IGN_WFS = 'https://data.geopf.fr/wfs/ows';
 const IGN_ALTI = 'https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json';
@@ -228,9 +229,11 @@ export async function fetchForestZones(center: LatLng, radiusMeters = 25000): Pr
   ]);
   const elevations = await fetchIgnElevations(terrainPoints);
 
-  return parsed.map((zone, index) => {
+  const terrainZones: ForestZone[] = parsed.map((zone, index) => {
     const terrain = terrainFromSamples(elevations.slice(index * 5, index * 5 + 5));
     const { distance: _distance, ...clean } = zone;
     return { ...clean, ...terrain };
   });
+
+  return enrichZonesWithSoil(terrainZones, center, radiusMeters);
 }
