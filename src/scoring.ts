@@ -1,4 +1,4 @@
-import type { ForestZone, Observation, Species, WeatherSnapshot } from './domain';
+import type { ForestZone, Observation, SoilProfile, Species, WeatherSnapshot } from './domain';
 
 const clamp = (value: number, min = 0, max = 100) => Math.min(max, Math.max(min, value));
 
@@ -55,12 +55,12 @@ function forestAffinity(species: Species, zone: ForestZone) {
   let score = 48;
 
   if (species === 'cepes') {
-    if (code.startsWith('FF1G01')) score = 97; // chênes décidus purs
-    else if (code.startsWith('FF1-09')) score = 97; // hêtre pur
-    else if (code.startsWith('FF1-10')) score = 93; // châtaignier pur
+    if (code.startsWith('FF1G01')) score = 97;
+    else if (code.startsWith('FF1-09')) score = 97;
+    else if (code.startsWith('FF1-10')) score = 93;
     else if (code === 'FF1-00-00' || code.startsWith('FF1-00')) score = 88;
     else if (code.startsWith('FF31') || code.startsWith('FF32')) score = 92;
-    else if (code.startsWith('FF2G61')) score = 91; // sapin / épicéa
+    else if (code.startsWith('FF2G61')) score = 91;
     else if (code.startsWith('FF2-52') || code.startsWith('FF2-53') || code.startsWith('FF2-80')) score = 85;
     else if (code.startsWith('FF2')) score = 80;
     else if (code.startsWith('FO3')) score = 80;
@@ -91,7 +91,7 @@ function forestAffinity(species: Species, zone: ForestZone) {
     if (containsAny(text, ['pin ', 'pinus', 'épicéa', 'epicea', 'picea', 'sapin', 'abies'])) score = Math.max(score, 91);
     if (containsAny(text, ['bouleau', 'betula'])) score = Math.max(score, 90);
   } else {
-    if (code.startsWith('FP')) score = 96; // peupleraie, bon proxy de milieux alluviaux
+    if (code.startsWith('FP')) score = 96;
     else if (code.startsWith('FO1')) score = 76;
     else if (code.startsWith('FF1')) score = 66;
     else if (code.startsWith('FF31') || code.startsWith('FF32') || code.startsWith('FO3')) score = 57;
@@ -128,6 +128,46 @@ function aspectAffinity(species: Species, aspect: number | null) {
   return clamp(100 - delta * 0.34, 42, 100);
 }
 
+function phAffinity(species: Species, ph: number | null) {
+  if (species === 'morilles') return bell(ph, 4.4, 6.2, 7.9, 8.8);
+  if (species === 'girolles') return bell(ph, 3.1, 4.0, 5.8, 7.1);
+  return bell(ph, 3.2, 4.2, 6.2, 7.4);
+}
+
+function textureAffinity(species: Species, soil: SoilProfile) {
+  const table: Record<Species, Record<string, number>> = {
+    cepes: {
+      'sableux': 68, 'sablo-limoneux': 94, 'limoneux': 92, 'limono-argileux': 82,
+      'argilo-limoneux': 76, 'argileux': 54, 'équilibré': 96, 'inconnu': 55
+    },
+    girolles: {
+      'sableux': 82, 'sablo-limoneux': 97, 'limoneux': 92, 'limono-argileux': 78,
+      'argilo-limoneux': 70, 'argileux': 48, 'équilibré': 95, 'inconnu': 55
+    },
+    morilles: {
+      'sableux': 58, 'sablo-limoneux': 81, 'limoneux': 96, 'limono-argileux': 94,
+      'argilo-limoneux': 92, 'argileux': 72, 'équilibré': 93, 'inconnu': 55
+    }
+  };
+  return table[species][soil.textureClass] ?? 55;
+}
+
+function drainageAffinity(species: Species, soil: SoilProfile) {
+  const index = soil.drainageIndex;
+  if (index == null) return 55;
+  if (species === 'morilles') return bell(index, 5, 28, 58, 88);
+  if (species === 'girolles') return bell(index, 10, 42, 72, 96);
+  return bell(index, 8, 38, 70, 95);
+}
+
+function soilAffinity(species: Species, soil?: SoilProfile) {
+  if (!soil) return 55;
+  const phScore = phAffinity(species, soil.ph);
+  const textureScore = textureAffinity(species, soil);
+  const drainageScore = drainageAffinity(species, soil);
+  return Math.round(phScore * 0.48 + textureScore * 0.30 + drainageScore * 0.22);
+}
+
 export function scoreHabitat(species: Species, zone: ForestZone) {
   const forestScore = forestAffinity(species, zone);
   const terrainScore = Math.round(
@@ -135,10 +175,12 @@ export function scoreHabitat(species: Species, zone: ForestZone) {
     slopeAffinity(species, zone.slope) * 0.40 +
     aspectAffinity(species, zone.aspect) * 0.15
   );
+  const soilScore = soilAffinity(species, zone.soil);
   return {
     forestScore: Math.round(forestScore),
     terrainScore,
-    habitatScore: Math.round(forestScore * 0.76 + terrainScore * 0.24)
+    soilScore,
+    habitatScore: Math.round(forestScore * 0.58 + terrainScore * 0.17 + soilScore * 0.25)
   };
 }
 
@@ -188,6 +230,12 @@ function aspectLabel(aspect: number | null) {
   return labels[Math.round(aspect / 45) % 8];
 }
 
+function soilReason(zone: ForestZone) {
+  if (!zone.soil) return 'Sol structuré indisponible';
+  const ph = zone.soil.ph == null ? 'pH —' : `pH ${zone.soil.ph.toFixed(1)}`;
+  return `${ph} · ${zone.soil.textureClass} · drainage ${zone.soil.drainageClass}`;
+}
+
 export function scoreZone(species: Species, zone: ForestZone, weather: WeatherSnapshot, observations: Observation[]) {
   const habitat = scoreHabitat(species, zone);
   const conditionScore = scoreConditions(species, weather);
@@ -205,6 +253,8 @@ export function scoreZone(species: Species, zone: ForestZone, weather: WeatherSn
     reasons: [
       zone.essence || zone.forestType || 'Formation forestière IGN',
       `Forêt ${habitat.forestScore}/100`,
+      `Sol ${habitat.soilScore}/100`,
+      soilReason(zone),
       `Terrain ${habitat.terrainScore}/100`,
       `Moment ${conditionScore}/100`,
       correction === 0 ? 'Historique neutre' : `Historique ${correction > 0 ? '+' : ''}${correction}`,
