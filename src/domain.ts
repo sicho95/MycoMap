@@ -12,6 +12,35 @@ export type ForestGeometry =
   | { type: 'Polygon'; coordinates: number[][][] }
   | { type: 'MultiPolygon'; coordinates: number[][][][] };
 
+export type SoilTextureClass =
+  | 'sableux'
+  | 'sablo-limoneux'
+  | 'limoneux'
+  | 'limono-argileux'
+  | 'argilo-limoneux'
+  | 'argileux'
+  | 'équilibré'
+  | 'inconnu';
+
+export type DrainageClass = 'très drainant' | 'drainant' | 'équilibré' | 'lent' | 'très lent' | 'inconnu';
+
+export interface SoilProfile {
+  ph: number | null;
+  clayPct: number | null;
+  sandPct: number | null;
+  siltPct: number | null;
+  coarseFragmentsPct: number | null;
+  fieldCapacityPct: number | null;
+  wiltingPointPct: number | null;
+  availableWaterPct: number | null;
+  textureClass: SoilTextureClass;
+  drainageClass: DrainageClass;
+  drainageIndex: number | null;
+  depth: '0-5cm';
+  resolutionMeters: 250;
+  source: 'SoilGrids 2.0 / ISRIC';
+}
+
 export interface WeatherSnapshot {
   date: string;
   rain3: number;
@@ -34,6 +63,7 @@ export interface ForestZone extends LatLng {
   forestCode?: string;
   forestType?: string;
   essence?: string;
+  soil?: SoilProfile;
   source: 'IGN BD Forêt v2';
 }
 
@@ -55,6 +85,7 @@ export interface Observation extends LatLng {
 export interface PotentialPoint extends ForestZone {
   forestScore: number;
   terrainScore: number;
+  soilScore: number;
   habitatScore: number;
   conditionScore: number;
   personalCorrection: number;
