@@ -38,8 +38,11 @@ export function scoreConditions(species: Species, weather: WeatherSnapshot, at =
   return Math.round(clamp(monthScore * 0.22 + rainScore * 0.34 + moistureScore * 0.22 + tempScore * 0.22));
 }
 
-function tagsText(tags: Record<string, string>) {
-  return Object.values(tags).join(' ').toLocaleLowerCase('fr');
+function tagsText(zone: ForestZone) {
+  return [zone.forestCode, zone.forestType, zone.essence, ...Object.values(zone.tags)]
+    .filter(Boolean)
+    .join(' ')
+    .toLocaleLowerCase('fr');
 }
 
 function containsAny(text: string, words: string[]) {
@@ -47,41 +50,96 @@ function containsAny(text: string, words: string[]) {
 }
 
 function forestAffinity(species: Species, zone: ForestZone) {
-  const text = tagsText(zone.tags);
-  let score = 57;
-  const leaf = zone.tags.leaf_type?.toLowerCase();
-
-  if (leaf === 'broadleaved') score += species === 'morilles' ? 13 : 8;
-  if (leaf === 'needleleaved') score += species === 'morilles' ? -10 : 7;
-  if (leaf === 'mixed') score += species === 'morilles' ? 4 : 13;
+  const code = (zone.forestCode ?? '').toUpperCase();
+  const text = tagsText(zone);
+  let score = 48;
 
   if (species === 'cepes') {
-    if (containsAny(text, ['quercus', 'chêne', 'chene', 'oak'])) score += 20;
-    if (containsAny(text, ['fagus', 'hêtre', 'hetre', 'beech'])) score += 19;
-    if (containsAny(text, ['castanea', 'châtaign', 'chataign', 'chestnut'])) score += 16;
-    if (containsAny(text, ['pinus', 'pine', 'picea', 'épicéa', 'epicea', 'spruce'])) score += 13;
+    if (code.startsWith('FF1G01')) score = 97; // chênes décidus purs
+    else if (code.startsWith('FF1-09')) score = 97; // hêtre pur
+    else if (code.startsWith('FF1-10')) score = 93; // châtaignier pur
+    else if (code === 'FF1-00-00' || code.startsWith('FF1-00')) score = 88;
+    else if (code.startsWith('FF31') || code.startsWith('FF32')) score = 92;
+    else if (code.startsWith('FF2G61')) score = 91; // sapin / épicéa
+    else if (code.startsWith('FF2-52') || code.startsWith('FF2-53') || code.startsWith('FF2-80')) score = 85;
+    else if (code.startsWith('FF2')) score = 80;
+    else if (code.startsWith('FO3')) score = 80;
+    else if (code.startsWith('FO1')) score = 78;
+    else if (code.startsWith('FO2')) score = 73;
+    else if (code.startsWith('FP')) score = 42;
+    else if (code.startsWith('LA')) score = 18;
+
+    if (containsAny(text, ['chêne', 'chene', 'quercus'])) score = Math.max(score, 96);
+    if (containsAny(text, ['hêtre', 'hetre', 'fagus'])) score = Math.max(score, 97);
+    if (containsAny(text, ['châtaign', 'chataign', 'castanea'])) score = Math.max(score, 92);
+    if (containsAny(text, ['épicéa', 'epicea', 'picea', 'sapin', 'abies'])) score = Math.max(score, 89);
   } else if (species === 'girolles') {
-    if (containsAny(text, ['quercus', 'chêne', 'chene', 'oak', 'fagus', 'hêtre', 'hetre', 'beech'])) score += 17;
-    if (containsAny(text, ['betula', 'bouleau', 'birch'])) score += 14;
-    if (containsAny(text, ['pinus', 'pine', 'picea', 'spruce', 'abies', 'sapin', 'fir'])) score += 14;
+    if (code.startsWith('FF1G01')) score = 94;
+    else if (code.startsWith('FF1-09')) score = 96;
+    else if (code.startsWith('FF1-10')) score = 89;
+    else if (code === 'FF1-00-00' || code.startsWith('FF1-00')) score = 88;
+    else if (code.startsWith('FF31') || code.startsWith('FF32')) score = 93;
+    else if (code.startsWith('FF2G61')) score = 95;
+    else if (code.startsWith('FF2-52') || code.startsWith('FF2-53') || code.startsWith('FF2-80')) score = 92;
+    else if (code.startsWith('FF2')) score = 87;
+    else if (code.startsWith('FO3')) score = 82;
+    else if (code.startsWith('FO1') || code.startsWith('FO2')) score = 78;
+    else if (code.startsWith('FP')) score = 45;
+    else if (code.startsWith('LA')) score = 20;
+
+    if (containsAny(text, ['hêtre', 'hetre', 'fagus', 'chêne', 'chene', 'quercus'])) score = Math.max(score, 93);
+    if (containsAny(text, ['pin ', 'pinus', 'épicéa', 'epicea', 'picea', 'sapin', 'abies'])) score = Math.max(score, 91);
+    if (containsAny(text, ['bouleau', 'betula'])) score = Math.max(score, 90);
   } else {
-    if (containsAny(text, ['fraxinus', 'frêne', 'frene', 'ash'])) score += 24;
-    if (containsAny(text, ['ulmus', 'orme', 'elm'])) score += 22;
-    if (containsAny(text, ['populus', 'peuplier', 'poplar'])) score += 18;
-    if (containsAny(text, ['malus', 'pommier', 'apple', 'orchard', 'verger'])) score += 20;
+    if (code.startsWith('FP')) score = 96; // peupleraie, bon proxy de milieux alluviaux
+    else if (code.startsWith('FO1')) score = 76;
+    else if (code.startsWith('FF1')) score = 66;
+    else if (code.startsWith('FF31') || code.startsWith('FF32') || code.startsWith('FO3')) score = 57;
+    else if (code.startsWith('FO2')) score = 42;
+    else if (code.startsWith('FF2')) score = 30;
+    else if (code.startsWith('LA')) score = 28;
+
+    if (containsAny(text, ['frêne', 'frene', 'fraxinus'])) score = Math.max(score, 100);
+    if (containsAny(text, ['orme', 'ulmus'])) score = Math.max(score, 98);
+    if (containsAny(text, ['peuplier', 'populus'])) score = Math.max(score, 96);
+    if (containsAny(text, ['pommier', 'malus', 'verger'])) score = Math.max(score, 93);
   }
   return clamp(score);
 }
 
 function elevationAffinity(species: Species, elevation: number | null) {
-  if (elevation == null) return 60;
-  if (species === 'morilles') return bell(elevation, -50, 80, 950, 1700);
-  if (species === 'girolles') return bell(elevation, -50, 80, 1250, 2100);
-  return bell(elevation, -50, 80, 1450, 2300);
+  if (elevation == null) return 58;
+  if (species === 'morilles') return bell(elevation, -50, 60, 900, 1700);
+  if (species === 'girolles') return bell(elevation, -50, 70, 1250, 2100);
+  return bell(elevation, -50, 70, 1450, 2300);
+}
+
+function slopeAffinity(species: Species, slope: number | null) {
+  if (slope == null) return 58;
+  if (species === 'morilles') return bell(slope, -1, 0, 12, 34);
+  if (species === 'girolles') return bell(slope, -1, 2, 20, 42);
+  return bell(slope, -1, 2, 18, 40);
+}
+
+function aspectAffinity(species: Species, aspect: number | null) {
+  if (aspect == null) return 66;
+  const target = species === 'morilles' ? 135 : 45;
+  const delta = Math.abs(((aspect - target + 540) % 360) - 180);
+  return clamp(100 - delta * 0.34, 42, 100);
 }
 
 export function scoreHabitat(species: Species, zone: ForestZone) {
-  return Math.round(forestAffinity(species, zone) * 0.82 + elevationAffinity(species, zone.elevation) * 0.18);
+  const forestScore = forestAffinity(species, zone);
+  const terrainScore = Math.round(
+    elevationAffinity(species, zone.elevation) * 0.45 +
+    slopeAffinity(species, zone.slope) * 0.40 +
+    aspectAffinity(species, zone.aspect) * 0.15
+  );
+  return {
+    forestScore: Math.round(forestScore),
+    terrainScore,
+    habitatScore: Math.round(forestScore * 0.76 + terrainScore * 0.24)
+  };
 }
 
 export function distanceMeters(a: { lat: number; lon: number }, b: { lat: number; lon: number }) {
@@ -124,22 +182,33 @@ export function personalCorrection(species: Species, zone: ForestZone, observati
   return Math.round(clamp(correction * damping, -12, 18));
 }
 
+function aspectLabel(aspect: number | null) {
+  if (aspect == null) return 'plat';
+  const labels = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
+  return labels[Math.round(aspect / 45) % 8];
+}
+
 export function scoreZone(species: Species, zone: ForestZone, weather: WeatherSnapshot, observations: Observation[]) {
-  const habitatScore = scoreHabitat(species, zone);
+  const habitat = scoreHabitat(species, zone);
   const conditionScore = scoreConditions(species, weather);
   const correction = personalCorrection(species, zone, observations);
-  const finalScore = Math.round(clamp(habitatScore * 0.6 + conditionScore * 0.4 + correction));
+  const finalScore = Math.round(clamp(habitat.habitatScore * 0.62 + conditionScore * 0.38 + correction));
+  const terrain = zone.elevation == null
+    ? 'Relief IGN indisponible'
+    : `${Math.round(zone.elevation)} m${zone.slope == null ? '' : ` · pente ${zone.slope.toFixed(0)}° · ${aspectLabel(zone.aspect)}`}`;
   return {
     ...zone,
-    habitatScore,
+    ...habitat,
     conditionScore,
     personalCorrection: correction,
     finalScore,
     reasons: [
-      `Habitat ${habitatScore}/100`,
+      zone.essence || zone.forestType || 'Formation forestière IGN',
+      `Forêt ${habitat.forestScore}/100`,
+      `Terrain ${habitat.terrainScore}/100`,
       `Moment ${conditionScore}/100`,
       correction === 0 ? 'Historique neutre' : `Historique ${correction > 0 ? '+' : ''}${correction}`,
-      zone.elevation == null ? 'Altitude indisponible' : `${Math.round(zone.elevation)} m`
+      terrain
     ]
   };
 }
