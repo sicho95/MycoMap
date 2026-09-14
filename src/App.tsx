@@ -36,6 +36,7 @@ const FALLBACK: LatLng = { lat: 48.78, lon: 2.26 };
 const IGN_PLAN_TILE = 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM&TILEROW={y}&TILECOL={x}&TILEMATRIX={z}&FORMAT=image/png';
 const VIEWPORT_RELOAD_DISTANCE_METERS = 4500;
 const AREA_RADIUS_METERS = 25000;
+const DISPLAY_MIN_SCORE = 50;
 
 type Sheet = 'observation' | 'spots' | 'data' | null;
 
@@ -192,12 +193,17 @@ export default function App() {
     return zones.map((zone) => scoreZone(species, zone, weather, observations));
   }, [zones, weather, species, observations]);
 
-  const visiblePotentials = useMemo(
-    () => potentials.filter((item) => pointInBounds(item, viewportBounds)),
-    [potentials, viewportBounds]
+  const displayPotentials = useMemo(
+    () => potentials.filter((item) => item.finalScore >= DISPLAY_MIN_SCORE),
+    [potentials]
   );
 
-  const selected = useMemo(() => potentials.find((item) => item.id === selectedId) ?? null, [potentials, selectedId]);
+  const visiblePotentials = useMemo(
+    () => displayPotentials.filter((item) => pointInBounds(item, viewportBounds)),
+    [displayPotentials, viewportBounds]
+  );
+
+  const selected = useMemo(() => displayPotentials.find((item) => item.id === selectedId) ?? null, [displayPotentials, selectedId]);
 
   const dataTarget = useMemo(() => {
     if (selected) return selected;
@@ -252,14 +258,14 @@ export default function App() {
       map.addLayer({
         id: 'potential-area', type: 'fill', source: 'potential-polygons',
         paint: {
-          'fill-color': ['interpolate', ['linear'], ['get', 'finalScore'], 0, '#3b82c4', 30, '#43a867', 55, '#f0c52e', 75, '#ff5b2e', 90, '#d61536'],
-          'fill-opacity': ['interpolate', ['linear'], ['get', 'finalScore'], 0, 0.12, 55, 0.24, 90, 0.46]
+          'fill-color': ['interpolate', ['linear'], ['get', 'finalScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
+          'fill-opacity': ['interpolate', ['linear'], ['get', 'finalScore'], 50, 0.16, 62.5, 0.20, 75, 0.27, 87.5, 0.36, 100, 0.48]
         }
       });
       map.addLayer({
         id: 'potential-outline', type: 'line', source: 'potential-polygons',
         paint: {
-          'line-color': ['interpolate', ['linear'], ['get', 'finalScore'], 0, '#3b82c4', 30, '#43a867', 55, '#f0c52e', 75, '#ff5b2e', 90, '#d61536'],
+          'line-color': ['interpolate', ['linear'], ['get', 'finalScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
           'line-width': ['interpolate', ['linear'], ['zoom'], 9, 0.7, 14, 1.7],
           'line-opacity': 0.82
         }
@@ -269,16 +275,16 @@ export default function App() {
         id: 'potential-halo', type: 'circle', source: 'potential-points',
         paint: {
           'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 18, 12, 36, 15, 58],
-          'circle-color': ['interpolate', ['linear'], ['get', 'finalScore'], 0, '#3b82c4', 30, '#43a867', 55, '#f0c52e', 75, '#ff5b2e', 90, '#d61536'],
-          'circle-opacity': ['interpolate', ['linear'], ['get', 'finalScore'], 0, 0.05, 55, 0.13, 90, 0.28],
+          'circle-color': ['interpolate', ['linear'], ['get', 'finalScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
+          'circle-opacity': ['interpolate', ['linear'], ['get', 'finalScore'], 50, 0.07, 62.5, 0.11, 75, 0.16, 87.5, 0.23, 100, 0.30],
           'circle-blur': 0.72
         }
       });
       map.addLayer({
         id: 'potential-point', type: 'circle', source: 'potential-points',
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['get', 'finalScore'], 0, 2.5, 75, 5.5, 100, 8.5],
-          'circle-color': ['interpolate', ['linear'], ['get', 'finalScore'], 0, '#3b82c4', 30, '#43a867', 55, '#f0c52e', 75, '#ff5b2e', 90, '#d61536'],
+          'circle-radius': ['interpolate', ['linear'], ['get', 'finalScore'], 50, 3, 75, 5.5, 100, 8.5],
+          'circle-color': ['interpolate', ['linear'], ['get', 'finalScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
           'circle-stroke-width': 1.3,
           'circle-stroke-color': '#ffffff',
           'circle-opacity': 0.94
@@ -326,9 +332,9 @@ export default function App() {
     if (!mapReady) return;
     const polygonSource = mapRef.current?.getSource('potential-polygons') as GeoJSONSource | undefined;
     const pointSource = mapRef.current?.getSource('potential-points') as GeoJSONSource | undefined;
-    polygonSource?.setData(polygonGeojson(potentials) as any);
-    pointSource?.setData(pointGeojson(potentials));
-  }, [potentials, mapReady]);
+    polygonSource?.setData(polygonGeojson(displayPotentials) as any);
+    pointSource?.setData(pointGeojson(displayPotentials));
+  }, [displayPotentials, mapReady]);
 
   useEffect(() => {
     if (!mapReady) return;
@@ -585,8 +591,8 @@ export default function App() {
             </button>
           ))}
         </div>
-        <div className="legend glass" aria-label="Légende du potentiel">
-          <span><i className="dot blue" />Faible</span><span><i className="dot green" /></span><span><i className="dot yellow" /></span><span><i className="dot orange" /></span><span><i className="dot red" />Chaud</span>
+        <div className="legend glass" aria-label="Légende du potentiel affiché de 50 à 100">
+          <span><i className="dot blue" />50</span><span><i className="dot green" /></span><span><i className="dot yellow" /></span><span><i className="dot orange" /></span><span><i className="dot red" />100</span>
         </div>
       </header>
 
@@ -599,7 +605,7 @@ export default function App() {
         <div className="status-pill glass">
           <span className="status-dot" style={{ background: topScore != null ? scoreColor(topScore) : '#8b968f' }} />
           {topScore == null
-            ? (loading ? 'Analyse de cette zone…' : 'Aucun secteur visible')
+            ? (loading ? 'Analyse de cette zone…' : 'Aucun secteur ≥ 50/100')
             : <>{!isOnline ? 'Hors ligne · écran' : loading ? 'Actualisation · écran' : 'Meilleur secteur visible'} : <b>{topScore}/100</b></>}
         </div>
       )}
