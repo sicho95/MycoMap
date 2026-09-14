@@ -22,7 +22,60 @@ const UPDATE_CHECK_MS = 45_000;
 const UPDATE_GRACE_MS = 3_500;
 const TILE_CACHE_NAME = 'mycomap-ign-tiles-v1';
 const FORCED_BUILD_KEY = 'mycomap:last-forced-build';
+const MANUAL_MAP_KEY = 'mycomap:manual-map-navigation';
 const IS_STANDALONE = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const BOOT_STARTED_AT = Date.now();
+
+// iOS peut rendre la position GPS plusieurs secondes après le lancement. Si l'utilisateur
+// a déjà commencé à explorer la carte, cette réponse tardive ne doit jamais le ramener
+// brutalement à sa position. Le bouton "Me localiser" reste toujours prioritaire.
+let manualMapNavigation = sessionStorage.getItem(MANUAL_MAP_KEY) === '1';
+let explicitLocateUntil = 0;
+
+window.addEventListener('pointerdown', (event) => {
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) return;
+
+  if (target.closest('[aria-label="Me localiser"]')) {
+    explicitLocateUntil = Date.now() + 6_000;
+    manualMapNavigation = false;
+    sessionStorage.removeItem(MANUAL_MAP_KEY);
+    return;
+  }
+
+  if (target.closest('.maplibregl-canvas, .map')) {
+    manualMapNavigation = true;
+    sessionStorage.setItem(MANUAL_MAP_KEY, '1');
+  }
+}, { capture: true, passive: true });
+
+const geolocation = navigator.geolocation;
+if (geolocation) {
+  const nativeGetCurrentPosition = geolocation.getCurrentPosition.bind(geolocation);
+  const guardedGetCurrentPosition: Geolocation['getCurrentPosition'] = (success, error, options) => {
+    const explicitLocate = Date.now() <= explicitLocateUntil;
+    const startupRequest = !explicitLocate && Date.now() - BOOT_STARTED_AT <= 15_000;
+
+    nativeGetCurrentPosition(
+      (position) => {
+        if (startupRequest && manualMapNavigation) return;
+        success(position);
+      },
+      (reason) => {
+        if (startupRequest && manualMapNavigation) return;
+        error?.(reason);
+      },
+      options
+    );
+  };
+
+  try {
+    geolocation.getCurrentPosition = guardedGetCurrentPosition;
+  } catch {
+    // Certains moteurs rendent cette méthode non réassignable. Dans ce cas l'app
+    // conserve le comportement natif plutôt que de casser la géolocalisation.
+  }
+}
 
 function compactBuildId(buildId: string) {
   return buildId.replace(/[^0-9A-Za-z]/g, '').slice(0, 18);
