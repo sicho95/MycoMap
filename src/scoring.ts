@@ -43,7 +43,10 @@ function conditionCepes(weather: WeatherSnapshot, at: Date) {
   const rain26 = rising(weather.rain26 ?? weather.rain30, 3, 85);
   const moisture = bell(weather.soilMoisture, 0.06, 0.17, 0.40, 0.60);
   const meteo = Math.sqrt(temp20 * rain26) * 0.78 + moisture * 0.22;
-  const gate = 0.06 + 0.94 * Math.pow(season / 100, 1.10);
+
+  // La saison est un a priori, pas un couperet : le complexe B. edulis s.l. comprend des
+  // espèces plus estivales et des épisodes atypiques restent possibles si la météo est favorable.
+  const gate = 0.58 + 0.42 * Math.pow(season / 100, 0.85);
   return Math.round(clamp(meteo * gate));
 }
 
@@ -58,7 +61,9 @@ function conditionGirolles(weather: WeatherSnapshot, at: Date) {
   const tempNow = bell(weather.soilTemp ?? weather.airTemp7, 5, 10, 20, 28);
   const longSignal = gdd * 0.52 + rainLong * 0.48;
   const meteo = longSignal * 0.58 + moisture * 0.27 + tempNow * 0.15;
-  const gate = 0.05 + 0.95 * Math.pow(season / 100, 1.15);
+
+  // Saison souple : une année exceptionnellement chaude/humide peut avancer ou prolonger la pousse.
+  const gate = 0.48 + 0.52 * Math.pow(season / 100, 0.95);
   return Math.round(clamp(meteo * gate));
 }
 
@@ -72,7 +77,10 @@ function conditionMorilles(weather: WeatherSnapshot, at: Date) {
   const airTemp = bell(weather.airTemp20 ?? weather.airTemp7, 1, 7, 16, 24);
   const moisture = bell(weather.soilMoisture, 0.07, 0.18, 0.42, 0.62);
   const meteo = rainEvent * 0.24 + rain30 * 0.16 + soilTemp * 0.30 + airTemp * 0.12 + moisture * 0.18;
-  const gate = 0.02 + 0.98 * Math.pow(season / 100, 1.45);
+
+  // Pour les morilles tempérées, la phénologie printanière est beaucoup plus structurante.
+  // On garde néanmoins un petit plancher plutôt qu'une interdiction mathématique absolue.
+  const gate = 0.08 + 0.92 * Math.pow(season / 100, 1.35);
   return Math.round(clamp(meteo * gate));
 }
 
