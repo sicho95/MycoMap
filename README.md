@@ -7,33 +7,39 @@ MycoMap est une PWA mobile-first pour repérer les zones naturellement favorable
 - carte plein écran MapLibre, pensée pour iPhone et usage à une main ;
 - fond cartographique **Plan IGN** ;
 - potentiel en couleurs : bleu → vert → jaune → orange → rouge (point chaud) ;
-- moteurs distincts pour **cèpes**, **girolles** et **morilles** ;
+- moteurs réellement distincts pour **cèpes**, **girolles** et **morilles** ;
 - **IGN BD Forêt v2** en WFS : polygones réels, code TFV, formation végétale et essence lorsqu'elle est fournie ;
-- **IGN RGE ALTI** : altitude et calcul local de pente/exposition à partir de cinq échantillons autour de chaque zone ;
-- météo réelle : pluies 3/7/14/30 jours, température et humidité du sol ;
+- **IGN RGE ALTI** : altitude et calcul local de pente/exposition ;
+- météo réelle avec fenêtres temporelles adaptées à chaque groupe : pluie récente et cumulée, température de l'air/du sol, humidité du sol, degrés-jours pour les girolles ;
 - **SoilGrids 2.0 / ISRIC (250 m)** : pH, sable, limon, argile, fragments grossiers, capacité au champ et point de flétrissement ;
 - classe de texture et indice de drainage calculés à partir des propriétés physiques du sol ;
-- couche nationale **INRAE / GIS Sol** conservée en surimpression cartographique ;
 - ajout d'une sortie positive ou négative ;
 - une sortie négative ne dégrade réellement le modèle que si les conditions étaient favorables et l'effort de prospection significatif ;
 - import d'une photo avec récupération de la position GPS EXIF et de la date ;
-- historique privé stocké localement sur l'appareil ;
-- PWA installable, thème clair/sombre/automatique ;
-- mise à jour PWA automatique : contrôle périodique, reprise au premier plan et application immédiate du nouveau service worker.
+- historique privé et photos stockés localement ;
+- cache spatial IndexedDB + cache de tuiles IGN pour les secteurs déjà consultés ;
+- enregistrement de sorties/photos hors ligne puis enrichissement météo au retour du réseau ;
+- PWA installable, thème clair/sombre/automatique et mise à jour automatique versionnée.
 
 ## Principe du score
 
 Le score affiché combine :
 
-1. **forêt** : type de formation et essence de la BD Forêt v2, pondérés différemment selon l'espèce recherchée ;
+1. **forêt / hôte** : type de formation et essence de la BD Forêt v2, avec un poids différent selon l'espèce recherchée ;
 2. **sol** : pH + texture + drainage physique estimé depuis SoilGrids ;
 3. **terrain** : altitude, pente et exposition calculées depuis le RGE ALTI ;
-4. **moment** : saison + pluie récente + humidité + température du sol ;
+4. **phénologie + météo** : moteur distinct par champignon ;
 5. **réel terrain** : les sorties personnelles corrigent progressivement le score local.
 
-Les observations positives renforcent un secteur. Les observations négatives sont volontairement beaucoup plus prudentes : elles ne pénalisent qu'en présence d'une fenêtre météo réellement favorable et après une prospection assez longue.
+Le score est un **indice de potentiel 0–100**, pas un pourcentage de chance de récolte. Un habitat générique ne peut plus devenir rouge uniquement grâce à une météo favorable. La saison agit comme facteur limitant, particulièrement pour les morilles.
 
-Le score reste un **indice de favorabilité**, pas une promesse de présence de champignons. Les pondérations sont explicables et séparées par espèce afin de pouvoir être recalibrées au fil des observations terrain.
+La justification scientifique des trois moteurs, les niveaux de preuve et les références sont documentés dans [`docs/SCIENTIFIC_MODEL.md`](docs/SCIENTIFIC_MODEL.md).
+
+## Modèles par champignon
+
+- **Cèpes** : hôte ectomycorhizien + eau disponible / humidité du sol + pluie en saison de fructification ; la fenêtre 20 j température / 26 j pluie issue d'un suivi récent sert seulement de raffinement secondaire tant qu'elle reste en prépublication.
+- **Girolles** : hôtes ectomycorhiziens, sols plutôt acides et drainants, accumulation thermique et hydrique sur 6–13 semaines, plus pluie récente et température des semaines précédant la fructification.
+- **Morilles** : forte fenêtre printanière, réchauffement du sol et événements de pluie des 30 jours précédents ; sol et végétation sont des indices plus prudents car l'écologie varie fortement selon les espèces et les perturbations.
 
 ## Données sols
 
@@ -45,14 +51,13 @@ Les attributs structurés sont récupérés à partir des couvertures WCS SoilGr
 - `wv0033` : teneur en eau à la capacité au champ ;
 - `wv1500` : teneur en eau au point de flétrissement.
 
-La classe de texture est calculée à partir des fractions sable/limon/argile. Le **drainage est un indice inféré**, et non une mesure directe : il combine texture, fragments grossiers et réserve en eau. Si SoilGrids est temporairement indisponible, MycoMap garde le facteur sol neutre pour éviter de fabriquer une valeur.
+La classe de texture est calculée à partir des fractions sable/limon/argile. Le **drainage est un indice inféré**, et non une mesure directe. Si SoilGrids est temporairement indisponible, MycoMap garde un facteur sol neutre au lieu de fabriquer une valeur.
 
-## Sources principales
+## Sources de données
 
 - Géoplateforme IGN WFS : `LANDCOVER.FORESTINVENTORY.V2:formation_vegetale`
 - Géoplateforme IGN altimétrie : ressource `ign_rge_alti_wld`
 - Plan IGN WMTS : `GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2`
-- Carte des sols INRAE / GIS Sol WMTS : `INRA.CARTE.SOLS`
 - SoilGrids 2.0 / ISRIC WCS : pH, texture et propriétés hydriques à 250 m
 - Open-Meteo : historique et conditions météo / sol
 
@@ -69,14 +74,15 @@ Vérification :
 npm run build
 ```
 
-## Confidentialité
+## Confidentialité et hors ligne
 
-Les coordonnées des coins et sorties sont stockées dans `localStorage` sur l'appareil. Elles ne sont pas envoyées vers un serveur MycoMap. Les appels réseau servent uniquement aux données externes nécessaires au calcul (IGN, INRAE, ISRIC et météo).
+Les coordonnées et métadonnées des sorties restent sur l'appareil. Les photos sont conservées dans IndexedDB. MycoMap n'envoie pas les coins personnels vers un serveur applicatif. Les appels réseau servent uniquement à récupérer les données externes nécessaires au calcul.
+
+Les zones déjà consultées restent disponibles hors ligne avec les dernières données mises en cache. Une observation enregistrée hors connexion modifie immédiatement la correction personnelle ; les informations météo manquantes sont complétées automatiquement lorsque le réseau revient.
 
 ## Suite prévue
 
-- stockage IndexedDB des photos ;
-- apprentissage non seulement local mais aussi par similarité d'habitat ;
-- cache de terrain hors-ligne ;
-- moteur de prévision de fenêtre de pousse par espèce ;
-- calibration progressive des pondérations à partir des observations terrain réelles.
+- apprentissage par similarité d'habitat, en plus de la correction spatiale actuelle ;
+- ajout d'une couche de perturbations/incendies utile aux morilles ;
+- calibration quantitative du modèle à partir d'un historique suffisamment riche de sorties réelles ;
+- export/import de sauvegarde des coins, observations et photos.
