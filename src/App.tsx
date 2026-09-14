@@ -14,13 +14,15 @@ import {
   Trash2,
   X
 } from 'lucide-react';
-import type { LatLng, Observation, ObservationOutcome, Species, ThemeMode, WeatherSnapshot } from './domain';
+import type { LatLng, Observation, ObservationOutcome, PotentialPoint, Species, ThemeMode, WeatherSnapshot } from './domain';
 import { loadObservations, loadTheme, persistObservations, persistTheme, SPECIES } from './domain';
 import { fetchForestZones } from './environment';
-import { scoreColor, scoreConditions, scoreLabel, scoreZone } from './scoring';
+import { distanceMeters, scoreColor, scoreConditions, scoreLabel, scoreZone } from './scoring';
 import { fetchCurrentWeather, fetchWeatherForDate } from './weather';
 
 const FALLBACK: LatLng = { lat: 48.78, lon: 2.26 };
+const IGN_PLAN_TILE = 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/png';
+const INRA_SOIL_TILE = 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=INRA.CARTE.SOLS&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/png';
 
 type Sheet = 'observation' | 'spots' | 'data' | null;
 
@@ -37,24 +39,37 @@ type Draft = {
 const baseStyle: maplibregl.StyleSpecification = {
   version: 8,
   sources: {
-    osm: {
+    ign: {
       type: 'raster',
-      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+      tiles: [IGN_PLAN_TILE],
       tileSize: 256,
-      attribution: '© OpenStreetMap contributors'
+      attribution: '© IGN · Géoplateforme'
     }
   },
-  layers: [{ id: 'osm', type: 'raster', source: 'osm' }]
+  layers: [{ id: 'ign', type: 'raster', source: 'ign' }]
 };
 
-function geojson(points: Array<{ lat: number; lon: number; [key: string]: unknown }>) {
+function pointGeojson(points: Array<{ lat: number; lon: number; [key: string]: unknown }>) {
   return {
     type: 'FeatureCollection' as const,
     features: points.map((point) => ({
       type: 'Feature' as const,
       geometry: { type: 'Point' as const, coordinates: [point.lon, point.lat] },
-      properties: Object.fromEntries(Object.entries(point).filter(([key]) => key !== 'lat' && key !== 'lon'))
+      properties: Object.fromEntries(Object.entries(point).filter(([key]) => !['lat', 'lon', 'geometry'].includes(key)))
     }))
+  };
+}
+
+function polygonGeojson(zones: PotentialPoint[]) {
+  return {
+    type: 'FeatureCollection' as const,
+    features: zones
+      .filter((zone) => zone.geometry)
+      .map((zone) => ({
+        type: 'Feature' as const,
+        geometry: zone.geometry!,
+        properties: Object.fromEntries(Object.entries(zone).filter(([key]) => !['geometry'].includes(key)))
+      }))
   };
 }
 
@@ -86,6 +101,7 @@ export default function App() {
   const [pickedLocation, setPickedLocation] = useState<LatLng | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [showSoils, setShowSoils] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>({
     outcome: 'found', count: 1, durationMinutes: 60, observedAt: new Date(), location: null, source: 'gps'
@@ -121,50 +137,72 @@ export default function App() {
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'top-left');
 
     map.on('load', () => {
-      map.addSource('potential', { type: 'geojson', data: geojson([]) });
+      map.addSource('soils', { type: 'raster', tiles: [INRA_SOIL_TILE], tileSize: 256, attribution: '© INRAE · GIS Sol' });
       map.addLayer({
-        id: 'potential-halo',
-        type: 'circle',
-        source: 'potential',
+        id: 'soils', type: 'raster', source: 'soils', layout: { visibility: 'none' },
+        paint: { 'raster-opacity': 0.5 }
+      });
+
+      map.addSource('potential-polygons', { type: 'geojson', data: polygonGeojson([]) as any });
+      map.addLayer({
+        id: 'potential-area', type: 'fill', source: 'potential-polygons',
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 22, 12, 46, 15, 72],
-          'circle-color': ['interpolate', ['linear'], ['get', 'finalScore'], 0, '#3b82c4', 30, '#43a867', 55, '#f0c52e', 75, '#ff5b2e', 90, '#d61536'],
-          'circle-opacity': 0.42,
-          'circle-blur': 0.75
+          'fill-color': ['interpolate', ['linear'], ['get', 'finalScore'], 0, '#3b82c4', 30, '#43a867', 55, '#f0c52e', 75, '#ff5b2e', 90, '#d61536'],
+          'fill-opacity': ['interpolate', ['linear'], ['get', 'finalScore'], 0, 0.12, 55, 0.24, 90, 0.46]
         }
       });
       map.addLayer({
-        id: 'potential-point',
-        type: 'circle',
-        source: 'potential',
+        id: 'potential-outline', type: 'line', source: 'potential-polygons',
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['get', 'finalScore'], 0, 3, 100, 8],
+          'line-color': ['interpolate', ['linear'], ['get', 'finalScore'], 0, '#3b82c4', 30, '#43a867', 55, '#f0c52e', 75, '#ff5b2e', 90, '#d61536'],
+          'line-width': ['interpolate', ['linear'], ['zoom'], 9, 0.7, 14, 1.7],
+          'line-opacity': 0.82
+        }
+      });
+
+      map.addSource('potential-points', { type: 'geojson', data: pointGeojson([]) });
+      map.addLayer({
+        id: 'potential-halo', type: 'circle', source: 'potential-points',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 18, 12, 36, 15, 58],
           'circle-color': ['interpolate', ['linear'], ['get', 'finalScore'], 0, '#3b82c4', 30, '#43a867', 55, '#f0c52e', 75, '#ff5b2e', 90, '#d61536'],
-          'circle-stroke-width': 1.5,
+          'circle-opacity': ['interpolate', ['linear'], ['get', 'finalScore'], 0, 0.05, 55, 0.13, 90, 0.28],
+          'circle-blur': 0.72
+        }
+      });
+      map.addLayer({
+        id: 'potential-point', type: 'circle', source: 'potential-points',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['get', 'finalScore'], 0, 2.5, 75, 5.5, 100, 8.5],
+          'circle-color': ['interpolate', ['linear'], ['get', 'finalScore'], 0, '#3b82c4', 30, '#43a867', 55, '#f0c52e', 75, '#ff5b2e', 90, '#d61536'],
+          'circle-stroke-width': 1.3,
           'circle-stroke-color': '#ffffff',
-          'circle-opacity': 0.92
+          'circle-opacity': 0.94
         }
       });
-      map.addSource('observations', { type: 'geojson', data: geojson([]) });
+
+      map.addSource('observations', { type: 'geojson', data: pointGeojson([]) });
       map.addLayer({
         id: 'observations', type: 'circle', source: 'observations',
         paint: { 'circle-radius': 6, 'circle-color': '#111814', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' }
       });
-      map.addSource('picked', { type: 'geojson', data: geojson([]) });
+      map.addSource('picked', { type: 'geojson', data: pointGeojson([]) });
       map.addLayer({
         id: 'picked', type: 'circle', source: 'picked',
         paint: { 'circle-radius': 9, 'circle-color': '#ffffff', 'circle-stroke-width': 3, 'circle-stroke-color': '#d61536' }
       });
     });
 
-    map.on('click', 'potential-point', (event) => {
+    const selectPotential = (event: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
       const id = event.features?.[0]?.properties?.id;
       if (id) setSelectedId(String(id));
-    });
-    map.on('mouseenter', 'potential-point', () => { map.getCanvas().style.cursor = 'pointer'; });
-    map.on('mouseleave', 'potential-point', () => { map.getCanvas().style.cursor = ''; });
+    };
+    map.on('click', 'potential-point', selectPotential);
+    map.on('click', 'potential-area', selectPotential);
+    map.on('mouseenter', 'potential-area', () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', 'potential-area', () => { map.getCanvas().style.cursor = ''; });
     map.on('click', (event) => {
-      const hit = map.queryRenderedFeatures(event.point, { layers: ['potential-point'] });
+      const hit = map.queryRenderedFeatures(event.point, { layers: ['potential-point', 'potential-area'] });
       if (hit.length) return;
       setSelectedId(null);
       setPickedLocation({ lat: event.lngLat.lat, lon: event.lngLat.lng });
@@ -175,19 +213,25 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const source = mapRef.current?.getSource('potential') as GeoJSONSource | undefined;
-    if (source) source.setData(geojson(potentials));
+    const polygonSource = mapRef.current?.getSource('potential-polygons') as GeoJSONSource | undefined;
+    const pointSource = mapRef.current?.getSource('potential-points') as GeoJSONSource | undefined;
+    if (polygonSource) polygonSource.setData(polygonGeojson(potentials) as any);
+    if (pointSource) pointSource.setData(pointGeojson(potentials));
   }, [potentials]);
 
   useEffect(() => {
     const source = mapRef.current?.getSource('observations') as GeoJSONSource | undefined;
-    if (source) source.setData(geojson(observations));
+    if (source) source.setData(pointGeojson(observations));
   }, [observations]);
 
   useEffect(() => {
     const source = mapRef.current?.getSource('picked') as GeoJSONSource | undefined;
-    if (source) source.setData(geojson(pickedLocation ? [pickedLocation] : []));
+    if (source) source.setData(pointGeojson(pickedLocation ? [pickedLocation] : []));
   }, [pickedLocation]);
+
+  useEffect(() => {
+    if (mapRef.current?.getLayer('soils')) mapRef.current.setLayoutProperty('soils', 'visibility', showSoils ? 'visible' : 'none');
+  }, [showSoils]);
 
   async function loadArea(target: LatLng, fly = true) {
     setLoading(true);
@@ -255,7 +299,7 @@ export default function App() {
       const snapshot = await fetchWeatherForDate(draft.location.lat, draft.location.lon, draft.observedAt);
       const conditionScore = scoreConditions(species, snapshot, draft.observedAt);
       const nearest = zones
-        .map((zone) => ({ zone, d: Math.hypot(zone.lat - draft.location!.lat, zone.lon - draft.location!.lon) }))
+        .map((zone) => ({ zone, d: distanceMeters(zone, draft.location!) }))
         .sort((a, b) => a.d - b.d)[0]?.zone;
       const item: Observation = {
         id: crypto.randomUUID(),
@@ -316,7 +360,7 @@ export default function App() {
       </div>
 
       {topScore != null && !selected && (
-        <div className="status-pill glass"><span className="status-dot" style={{ background: scoreColor(topScore) }} />Meilleur secteur visible : <b>{topScore}/100</b></div>
+        <div className="status-pill glass"><span className="status-dot" style={{ background: scoreColor(topScore) }} />IGN · meilleur secteur : <b>{topScore}/100</b></div>
       )}
 
       {selected && (
@@ -354,10 +398,10 @@ export default function App() {
           )}
           <div className="field"><span>Temps de recherche</span><div className="chips">{[30, 60, 120, 180].map((minutes) => <button key={minutes} className={draft.durationMinutes === minutes ? 'active' : ''} onClick={() => setDraft((d) => ({ ...d, durationMinutes: minutes }))}>{minutes < 60 ? `${minutes} min` : `${minutes / 60} h`}</button>)}</div></div>
           <div className="auto-card"><Crosshair size={18} /><div><b>{draft.source === 'photo' ? 'Position de la photo' : draft.source === 'map' ? 'Position choisie sur la carte' : 'Position GPS'}</b><span>{draft.location ? `${draft.location.lat.toFixed(5)}, ${draft.location.lon.toFixed(5)}` : 'Recherche…'}</span></div></div>
-          <div className="auto-card"><RefreshCw size={18} /><div><b>Météo préremplie automatiquement</b><span>Pluie, température et humidité du sol à la date de la sortie.</span></div></div>
+          <div className="auto-card"><RefreshCw size={18} /><div><b>Conditions préremplies automatiquement</b><span>Météo de la date + rattachement à la formation forestière IGN la plus proche.</span></div></div>
           <input ref={photoInput} hidden type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && importPhoto(e.target.files[0])} />
           <button className="secondary-button" onClick={() => photoInput.current?.click()}>Importer une photo géolocalisée</button>
-          <button className="save-button" disabled={saving || !draft.location} onClick={saveObservation}>{saving ? 'Récupération météo…' : 'Enregistrer et faire apprendre le modèle'}</button>
+          <button className="save-button" disabled={saving || !draft.location} onClick={saveObservation}>{saving ? 'Analyse des conditions…' : 'Enregistrer et faire apprendre le modèle'}</button>
         </section>
       )}
 
@@ -383,12 +427,13 @@ export default function App() {
           <div className="grabber" />
           <div className="sheet-title"><div><small>Transparence du score</small><h2>Données utilisées</h2></div><button className="icon-button" onClick={() => setSheet(null)}><X size={20} /></button></div>
           <div className="data-grid">
-            <div className="data-item ok"><b>Forêt</b><span>OpenStreetMap · peuplements et essences quand renseignés</span></div>
-            <div className="data-item ok"><b>Altitude</b><span>Modèle numérique de terrain via Open‑Meteo / Copernicus</span></div>
-            <div className="data-item ok"><b>Météo</b><span>Pluie 3/7/14/30 j, température et humidité du sol</span></div>
-            <div className="data-item pending"><b>Sols</b><span>Source pédologique française à brancher ; la V1 garde ce facteur neutre plutôt que de l’inventer.</span></div>
-            <div className="data-item private"><b>Ton historique</b><span>Reste local. Il corrige les zones autour de tes sorties selon le résultat et les conditions du jour.</span></div>
+            <div className="data-item ok"><b>Forêt</b><span>IGN BD Forêt v2 · polygones réels, 32 formations, essence et code TFV.</span></div>
+            <div className="data-item ok"><b>Relief</b><span>IGN RGE ALTI · altitude + échantillonnage N/S/E/O pour pente et exposition.</span></div>
+            <div className="data-item ok"><b>Météo</b><span>Pluie 3/7/14/30 j, température et humidité du sol via Open‑Meteo.</span></div>
+            <div className="data-item ok"><b>Sols</b><span>Couche nationale INRAE / GIS Sol disponible en surimpression cartographique.</span></div>
+            <div className="data-item private"><b>Ton historique</b><span>Reste local. Il corrige les zones autour de tes sorties selon le résultat, l’effort et les conditions du jour.</span></div>
           </div>
+          <button className="secondary-button" onClick={() => setShowSoils((value) => !value)}>{showSoils ? 'Masquer la carte des sols' : 'Afficher la carte des sols'}</button>
         </section>
       )}
     </main>
