@@ -7,6 +7,10 @@ const avg = (values: Array<number | null | undefined>) => {
 };
 
 const sum = (values: Array<number | null | undefined>) => values.reduce<number>((total, v) => total + (typeof v === 'number' ? v : 0), 0);
+const max = (values: Array<number | null | undefined>) => {
+  const usable = values.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+  return usable.length ? Math.max(...usable) : null;
+};
 const dayKey = (date: Date) => date.toISOString().slice(0, 10);
 
 function normalizeWeather(data: any, at: Date): WeatherSnapshot {
@@ -18,8 +22,9 @@ function normalizeWeather(data: any, at: Date): WeatherSnapshot {
   const maxTemps: number[] = data.daily?.temperature_2m_max ?? [];
   const minTemps: number[] = data.daily?.temperature_2m_min ?? [];
   const dailyMean = maxTemps.map((v, i) => (v + (minTemps[i] ?? v)) / 2);
-  const trailing = (days: number) => precip.slice(Math.max(0, idx - days + 1), idx + 1);
+  const trailingRain = (days: number) => precip.slice(Math.max(0, idx - days + 1), idx + 1);
   const trailingTemp = (days: number) => dailyMean.slice(Math.max(0, idx - days + 1), idx + 1);
+  const gdd84 = trailingTemp(84).reduce<number>((total, value) => total + Math.max(0, value - 5), 0);
 
   const hourlyTimes: string[] = data.hourly?.time ?? [];
   const targetMs = at.getTime();
@@ -35,13 +40,17 @@ function normalizeWeather(data: any, at: Date): WeatherSnapshot {
 
   return {
     date: at.toISOString(),
-    rain3: sum(trailing(3)),
-    rain7: sum(trailing(7)),
-    rain14: sum(trailing(14)),
-    rain26: sum(trailing(26)),
-    rain30: sum(trailing(30)),
+    rain3: sum(trailingRain(3)),
+    rain7: sum(trailingRain(7)),
+    rain14: sum(trailingRain(14)),
+    rain26: sum(trailingRain(26)),
+    rain30: sum(trailingRain(30)),
+    rain56: sum(trailingRain(56)),
+    rain84: sum(trailingRain(84)),
+    maxRainEvent30: max(trailingRain(30)) ?? 0,
     airTemp7: avg(trailingTemp(7)),
     airTemp20: avg(trailingTemp(20)),
+    gdd84Base5: Number.isFinite(gdd84) ? gdd84 : null,
     soilTemp: data.hourly?.soil_temperature_6cm?.[hourIdx] ?? data.hourly?.soil_temperature_7_to_28cm?.[hourIdx] ?? null,
     soilMoisture: data.hourly?.soil_moisture_3_to_9cm?.[hourIdx] ?? data.hourly?.soil_moisture_0_to_7cm?.[hourIdx] ?? null
   };
@@ -52,7 +61,7 @@ async function fetchRecentWeatherNetwork(lat: number, lon: number, at: Date): Pr
     latitude: lat.toFixed(5),
     longitude: lon.toFixed(5),
     timezone: 'auto',
-    past_days: '30',
+    past_days: '90',
     forecast_days: '2',
     daily: 'precipitation_sum,temperature_2m_max,temperature_2m_min',
     hourly: 'soil_temperature_6cm,soil_moisture_3_to_9cm'
@@ -64,7 +73,7 @@ async function fetchRecentWeatherNetwork(lat: number, lon: number, at: Date): Pr
 
 async function fetchArchiveWeatherNetwork(lat: number, lon: number, date: Date): Promise<WeatherSnapshot> {
   const start = new Date(date);
-  start.setDate(start.getDate() - 30);
+  start.setDate(start.getDate() - 90);
   const params = new URLSearchParams({
     latitude: lat.toFixed(5),
     longitude: lon.toFixed(5),
@@ -88,14 +97,15 @@ async function cachedFirst(
 ) {
   const cached = await getCachedWeather(lat, lon, date);
   const historical = Date.now() - date.getTime() > 48 * 60 * 60 * 1000;
-  const recentCacheFresh = cached && Date.now() - cached.updatedAt < 6 * 60 * 60 * 1000;
+  const hasLongSignals = !!cached && cached.snapshot.rain84 != null && cached.snapshot.gdd84Base5 != null;
+  const recentCacheFresh = cached && hasLongSignals && Date.now() - cached.updatedAt < 6 * 60 * 60 * 1000;
 
   if (!navigator.onLine) {
     if (cached) return cached.snapshot;
     throw new Error('Météo non disponible hors ligne pour cette date');
   }
 
-  if (!force && cached && (historical || recentCacheFresh)) return cached.snapshot;
+  if (!force && cached && ((historical && hasLongSignals) || recentCacheFresh)) return cached.snapshot;
 
   try {
     const snapshot = await network();
