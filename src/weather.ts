@@ -19,6 +19,7 @@ function normalizeWeather(data: any, at: Date): WeatherSnapshot {
   const minTemps: number[] = data.daily?.temperature_2m_min ?? [];
   const dailyMean = maxTemps.map((v, i) => (v + (minTemps[i] ?? v)) / 2);
   const trailing = (days: number) => precip.slice(Math.max(0, idx - days + 1), idx + 1);
+  const trailingTemp = (days: number) => dailyMean.slice(Math.max(0, idx - days + 1), idx + 1);
 
   const hourlyTimes: string[] = data.hourly?.time ?? [];
   const targetMs = at.getTime();
@@ -37,8 +38,10 @@ function normalizeWeather(data: any, at: Date): WeatherSnapshot {
     rain3: sum(trailing(3)),
     rain7: sum(trailing(7)),
     rain14: sum(trailing(14)),
+    rain26: sum(trailing(26)),
     rain30: sum(trailing(30)),
-    airTemp7: avg(dailyMean.slice(Math.max(0, idx - 6), idx + 1)),
+    airTemp7: avg(trailingTemp(7)),
+    airTemp20: avg(trailingTemp(20)),
     soilTemp: data.hourly?.soil_temperature_6cm?.[hourIdx] ?? data.hourly?.soil_temperature_7_to_28cm?.[hourIdx] ?? null,
     soilMoisture: data.hourly?.soil_moisture_3_to_9cm?.[hourIdx] ?? data.hourly?.soil_moisture_0_to_7cm?.[hourIdx] ?? null
   };
