@@ -12,18 +12,128 @@ let activeRegistration: ServiceWorkerRegistration | undefined;
 let updateInProgress = false;
 let reloadScheduled = false;
 
-function scheduleHardReload(remoteBuildId: string) {
+const UPDATE_CHECK_MS = 45_000;
+const UPDATE_GRACE_MS = 3_500;
+const TILE_CACHE_NAME = 'mycomap-ign-tiles-v1';
+
+function buildReloadUrl(remoteBuildId: string) {
+  const url = new URL(import.meta.env.BASE_URL, window.location.origin);
+  url.searchParams.set('__mycomap_build', remoteBuildId.replace(/[^0-9A-Za-z]/g, '').slice(0, 18));
+  url.searchParams.set('__network', String(Date.now()));
+  return url.toString();
+}
+
+function waitForControllerChange(timeoutMs = UPDATE_GRACE_MS) {
+  return new Promise<boolean>((resolve) => {
+    if (!('serviceWorker' in navigator)) {
+      resolve(false);
+      return;
+    }
+
+    let finished = false;
+    const finish = (changed: boolean) => {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(timer);
+      navigator.serviceWorker.removeEventListener('controllerchange', onChange);
+      resolve(changed);
+    };
+    const onChange = () => finish(true);
+    const timer = window.setTimeout(() => finish(false), timeoutMs);
+    navigator.serviceWorker.addEventListener('controllerchange', onChange);
+  });
+}
+
+async function waitForWaitingWorker(registration?: ServiceWorkerRegistration) {
+  if (!registration) return undefined;
+  if (registration.waiting) return registration.waiting;
+  const worker = registration.installing;
+  if (!worker) return undefined;
+
+  await new Promise<void>((resolve) => {
+    const timer = window.setTimeout(resolve, 2_500);
+    const onState = () => {
+      if (worker.state === 'installed' || worker.state === 'activated' || worker.state === 'redundant') {
+        window.clearTimeout(timer);
+        worker.removeEventListener('statechange', onState);
+        resolve();
+      }
+    };
+    worker.addEventListener('statechange', onState);
+    onState();
+  });
+
+  return registration.waiting;
+}
+
+async function removeOnlyAppShellCaches() {
+  if (!('caches' in window)) return;
+  const names = await caches.keys();
+  await Promise.all(
+    names
+      .filter((name) => name !== TILE_CACHE_NAME && (name.includes('workbox-precache') || name.includes('precache')))
+      .map((name) => caches.delete(name))
+  );
+}
+
+async function unregisterMycoMapWorkers() {
+  if (!('serviceWorker' in navigator)) return;
+  const registrations = await navigator.serviceWorker.getRegistrations();
+  const baseUrl = new URL(import.meta.env.BASE_URL, window.location.origin).href;
+  await Promise.all(
+    registrations
+      .filter((registration) => registration.scope.startsWith(baseUrl))
+      .map((registration) => registration.unregister())
+  );
+}
+
+async function emergencyNetworkReload(remoteBuildId: string) {
   if (reloadScheduled) return;
   reloadScheduled = true;
-  window.setTimeout(() => {
-    const url = new URL(window.location.href);
-    url.searchParams.set('__mycomap_build', remoteBuildId.replace(/[^0-9A-Za-z]/g, '').slice(0, 18));
-    window.location.replace(url.toString());
-  }, 1400);
+
+  // Important : on ne touche jamais à IndexedDB ni à localStorage ici.
+  // Les sorties, photos, coins et caches métier restent donc intacts.
+  await Promise.allSettled([
+    unregisterMycoMapWorkers(),
+    removeOnlyAppShellCaches()
+  ]);
+
+  window.location.replace(buildReloadUrl(remoteBuildId));
+}
+
+async function activatePublishedBuild(remoteBuildId: string, registration = activeRegistration) {
+  if (updateInProgress || reloadScheduled) return;
+  updateInProgress = true;
+
+  try {
+    const controllerChange = waitForControllerChange();
+
+    await registration?.update().catch(() => undefined);
+    const waitingWorker = await waitForWaitingWorker(registration);
+    waitingWorker?.postMessage({ type: 'SKIP_WAITING' });
+
+    // Le helper vite-plugin-pwa reste utile sur les navigateurs qui gèrent
+    // correctement le cycle de vie standard du service worker.
+    await applyUpdate(false).catch(() => undefined);
+
+    const changed = await controllerChange;
+    if (changed) {
+      reloadScheduled = true;
+      window.location.replace(buildReloadUrl(remoteBuildId));
+      return;
+    }
+
+    // Safari/iOS peut conserver l'ancien worker malgré update/skipWaiting.
+    // On retire alors uniquement le worker + precache d'interface, jamais les
+    // données utilisateur, puis on recharge directement depuis le réseau.
+    await emergencyNetworkReload(remoteBuildId);
+  } finally {
+    if (!reloadScheduled) updateInProgress = false;
+  }
 }
 
 async function checkPublishedVersion(registration = activeRegistration) {
-  if (!navigator.onLine || updateInProgress) return;
+  if (!navigator.onLine || updateInProgress || reloadScheduled) return;
   try {
     const url = `${import.meta.env.BASE_URL}version.json?t=${Date.now()}`;
     const response = await fetch(url, {
@@ -33,38 +143,27 @@ async function checkPublishedVersion(registration = activeRegistration) {
     if (!response.ok) return;
     const published = await response.json() as { buildId?: string };
     if (!published.buildId || published.buildId === __MYCOMAP_BUILD_ID__) return;
-
-    updateInProgress = true;
-    await registration?.update().catch(() => undefined);
-    await applyUpdate(true).catch(() => undefined);
-    scheduleHardReload(published.buildId);
+    await activatePublishedBuild(published.buildId, registration);
   } catch {
-    // En cas de réseau instable on conserve simplement la version courante.
-  } finally {
-    window.setTimeout(() => { updateInProgress = false; }, 2500);
+    // Réseau instable : on conserve la version courante et on réessaiera plus tard.
   }
 }
-
-navigator.serviceWorker?.addEventListener('controllerchange', () => {
-  if (reloadScheduled) return;
-  reloadScheduled = true;
-  window.location.reload();
-});
 
 applyUpdate = registerSW({
   immediate: true,
   onNeedRefresh() {
-    void applyUpdate(true);
+    // Un update normal peut arriver avant le contrôle version.json.
+    // On demande l'activation, sans effacer la moindre donnée locale.
+    void applyUpdate(false);
   },
   onRegisteredSW(_swUrl, registration) {
     activeRegistration = registration;
     const checkForUpdate = () => {
       if (!navigator.onLine) return;
-      void registration?.update().catch(() => undefined);
       void checkPublishedVersion(registration);
     };
     checkForUpdate();
-    window.setInterval(checkForUpdate, 45_000);
+    window.setInterval(checkForUpdate, UPDATE_CHECK_MS);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') checkForUpdate();
     });
