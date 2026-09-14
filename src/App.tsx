@@ -23,6 +23,7 @@ import { fetchCurrentWeather, fetchWeatherForDate } from './weather';
 const FALLBACK: LatLng = { lat: 48.78, lon: 2.26 };
 const IGN_PLAN_TILE = 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/png';
 const INRA_SOIL_TILE = 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=INRA.CARTE.SOLS&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/png';
+const VIEWPORT_RELOAD_DISTANCE_METERS = 9000;
 
 type Sheet = 'observation' | 'spots' | 'data' | null;
 
@@ -97,6 +98,7 @@ export default function App() {
   const [zones, setZones] = useState<Awaited<ReturnType<typeof fetchForestZones>>>([]);
   const [observations, setObservations] = useState<Observation[]>(() => loadObservations());
   const [loading, setLoading] = useState(true);
+  const [mapReady, setMapReady] = useState(false);
   const [sheet, setSheet] = useState<Sheet>(null);
   const [pickedLocation, setPickedLocation] = useState<LatLng | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -191,6 +193,7 @@ export default function App() {
         id: 'picked', type: 'circle', source: 'picked',
         paint: { 'circle-radius': 9, 'circle-color': '#ffffff', 'circle-stroke-width': 3, 'circle-stroke-color': '#d61536' }
       });
+      setMapReady(true);
     });
 
     const selectPotential = (event: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
@@ -202,40 +205,53 @@ export default function App() {
     map.on('mouseenter', 'potential-area', () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', 'potential-area', () => { map.getCanvas().style.cursor = ''; });
     map.on('click', (event) => {
-      const hit = map.queryRenderedFeatures(event.point, { layers: ['potential-point', 'potential-area'] });
+      const availableLayers = ['potential-point', 'potential-area'].filter((id) => map.getLayer(id));
+      const hit = availableLayers.length ? map.queryRenderedFeatures(event.point, { layers: availableLayers }) : [];
       if (hit.length) return;
       setSelectedId(null);
       setPickedLocation({ lat: event.lngLat.lat, lon: event.lngLat.lng });
     });
 
     mapRef.current = map;
-    return () => { map.remove(); mapRef.current = null; };
+    return () => {
+      setMapReady(false);
+      map.remove();
+      mapRef.current = null;
+    };
   }, []);
 
   useEffect(() => {
+    if (!mapReady) return;
     const polygonSource = mapRef.current?.getSource('potential-polygons') as GeoJSONSource | undefined;
     const pointSource = mapRef.current?.getSource('potential-points') as GeoJSONSource | undefined;
     if (polygonSource) polygonSource.setData(polygonGeojson(potentials) as any);
     if (pointSource) pointSource.setData(pointGeojson(potentials));
-  }, [potentials]);
+  }, [potentials, mapReady]);
 
   useEffect(() => {
+    if (!mapReady) return;
     const source = mapRef.current?.getSource('observations') as GeoJSONSource | undefined;
     if (source) source.setData(pointGeojson(observations));
-  }, [observations]);
+  }, [observations, mapReady]);
 
   useEffect(() => {
+    if (!mapReady) return;
     const source = mapRef.current?.getSource('picked') as GeoJSONSource | undefined;
     if (source) source.setData(pointGeojson(pickedLocation ? [pickedLocation] : []));
-  }, [pickedLocation]);
+  }, [pickedLocation, mapReady]);
 
   useEffect(() => {
+    if (!mapReady) return;
     if (mapRef.current?.getLayer('soils')) mapRef.current.setLayoutProperty('soils', 'visibility', showSoils ? 'visible' : 'none');
-  }, [showSoils]);
+  }, [showSoils, mapReady]);
 
   async function loadArea(target: LatLng, fly = true) {
     setLoading(true);
     setNotice(null);
+    setPosition(target);
+    setZones([]);
+    setWeather(null);
+    setSelectedId(null);
     try {
       const [nextWeather, nextZones] = await Promise.all([
         fetchCurrentWeather(target.lat, target.lon),
@@ -243,7 +259,6 @@ export default function App() {
       ]);
       setWeather(nextWeather);
       setZones(nextZones);
-      setPosition(target);
       if (fly) mapRef.current?.flyTo({ center: [target.lon, target.lat], zoom: 11.2, duration: 700 });
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Impossible de charger la zone');
@@ -251,6 +266,28 @@ export default function App() {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (!mapReady) return;
+    const map = mapRef.current;
+    if (!map) return;
+    let timer: number | undefined;
+    const onMoveEnd = () => {
+      if (loading) return;
+      const center = map.getCenter();
+      const target = { lat: center.lat, lon: center.lng };
+      if (distanceMeters(position, target) < VIEWPORT_RELOAD_DISTANCE_METERS) return;
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        void loadArea(target, false);
+      }, 550);
+    };
+    map.on('moveend', onMoveEnd);
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      map.off('moveend', onMoveEnd);
+    };
+  }, [mapReady, loading, position.lat, position.lon]);
 
   useEffect(() => {
     navigator.geolocation?.getCurrentPosition(
@@ -268,7 +305,17 @@ export default function App() {
     );
   }
 
-  function openObservation(location = pickedLocation ?? position, source: Observation['source'] = pickedLocation ? 'map' : 'gps') {
+  function refreshVisibleArea() {
+    const center = mapRef.current?.getCenter();
+    void loadArea(center ? { lat: center.lat, lon: center.lng } : position, false);
+  }
+
+  function currentMapCenter(): LatLng {
+    const center = mapRef.current?.getCenter();
+    return center ? { lat: center.lat, lon: center.lng } : position;
+  }
+
+  function openObservation(location = pickedLocation ?? currentMapCenter(), source: Observation['source'] = pickedLocation ? 'map' : 'gps') {
     setDraft({ outcome: 'found', count: 1, durationMinutes: 60, observedAt: new Date(), location, source });
     setSheet('observation');
   }
@@ -281,7 +328,7 @@ export default function App() {
       ]);
       const location = gps?.latitude != null && gps?.longitude != null
         ? { lat: gps.latitude, lon: gps.longitude }
-        : draft.location ?? position;
+        : draft.location ?? currentMapCenter();
       const date = metadata?.DateTimeOriginal instanceof Date ? metadata.DateTimeOriginal : new Date();
       setDraft((current) => ({ ...current, location, observedAt: date, source: 'photo', photoName: file.name }));
       setPickedLocation(location);
@@ -356,7 +403,7 @@ export default function App() {
 
       <div className="map-actions">
         <button className="map-button glass" onClick={locateMe} aria-label="Me localiser"><LocateFixed size={20} /></button>
-        <button className="map-button glass" onClick={() => loadArea(position, false)} aria-label="Actualiser les données"><RefreshCw className={loading ? 'spin' : ''} size={20} /></button>
+        <button className="map-button glass" onClick={refreshVisibleArea} aria-label="Actualiser les données visibles"><RefreshCw className={loading ? 'spin' : ''} size={20} /></button>
       </div>
 
       {topScore != null && !selected && (
@@ -398,7 +445,7 @@ export default function App() {
           )}
           <div className="field"><span>Temps de recherche</span><div className="chips">{[30, 60, 120, 180].map((minutes) => <button key={minutes} className={draft.durationMinutes === minutes ? 'active' : ''} onClick={() => setDraft((d) => ({ ...d, durationMinutes: minutes }))}>{minutes < 60 ? `${minutes} min` : `${minutes / 60} h`}</button>)}</div></div>
           <div className="auto-card"><Crosshair size={18} /><div><b>{draft.source === 'photo' ? 'Position de la photo' : draft.source === 'map' ? 'Position choisie sur la carte' : 'Position GPS'}</b><span>{draft.location ? `${draft.location.lat.toFixed(5)}, ${draft.location.lon.toFixed(5)}` : 'Recherche…'}</span></div></div>
-          <div className="auto-card"><RefreshCw size={18} /><div><b>Conditions préremplies automatiquement</b><span>Météo de la date + rattachement à la formation forestière IGN la plus proche.</span></div></div>
+          <div className="auto-card"><RefreshCw size={18} /><div><b>Conditions préremplies automatiquement</b><span>Météo de la date + forêt IGN + relief + sol structuré autour de la zone.</span></div></div>
           <input ref={photoInput} hidden type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && importPhoto(e.target.files[0])} />
           <button className="secondary-button" onClick={() => photoInput.current?.click()}>Importer une photo géolocalisée</button>
           <button className="save-button" disabled={saving || !draft.location} onClick={saveObservation}>{saving ? 'Analyse des conditions…' : 'Enregistrer et faire apprendre le modèle'}</button>
@@ -430,7 +477,7 @@ export default function App() {
             <div className="data-item ok"><b>Forêt</b><span>IGN BD Forêt v2 · polygones réels, 32 formations, essence et code TFV.</span></div>
             <div className="data-item ok"><b>Relief</b><span>IGN RGE ALTI · altitude + échantillonnage N/S/E/O pour pente et exposition.</span></div>
             <div className="data-item ok"><b>Météo</b><span>Pluie 3/7/14/30 j, température et humidité du sol via Open‑Meteo.</span></div>
-            <div className="data-item ok"><b>Sols</b><span>Couche nationale INRAE / GIS Sol disponible en surimpression cartographique.</span></div>
+            <div className="data-item ok"><b>Sols</b><span>SoilGrids structuré : pH, sable/limon/argile, éléments grossiers, réserve utile, texture et drainage estimé. Couche INRAE/GIS Sol en surimpression.</span></div>
             <div className="data-item private"><b>Ton historique</b><span>Reste local. Il corrige les zones autour de tes sorties selon le résultat, l’effort et les conditions du jour.</span></div>
           </div>
           <button className="secondary-button" onClick={() => setShowSoils((value) => !value)}>{showSoils ? 'Masquer la carte des sols' : 'Afficher la carte des sols'}</button>
