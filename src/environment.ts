@@ -9,6 +9,11 @@ const MAX_WFS_FEATURES = 1800;
 const MAX_ANALYSED_ZONES = 280;
 const TERRAIN_SAMPLE_METERS = 80;
 
+type WfsVariant = {
+  srsName: string;
+  bbox: (bbox: ReturnType<typeof bboxAround>) => string;
+};
+
 function distanceMeters(a: LatLng, b: LatLng) {
   const r = 6371000;
   const toRad = (value: number) => value * Math.PI / 180;
@@ -93,6 +98,30 @@ function representativePoint(geometry: ForestGeometry): LatLng | null {
   return ringCentroid(largest);
 }
 
+function swapGeometryAxes(geometry: ForestGeometry): ForestGeometry {
+  if (geometry.type === 'Polygon') {
+    return {
+      type: 'Polygon',
+      coordinates: geometry.coordinates.map((ring) => ring.map(([x, y]) => [y, x]))
+    };
+  }
+  return {
+    type: 'MultiPolygon',
+    coordinates: geometry.coordinates.map((polygon) => polygon.map((ring) => ring.map(([x, y]) => [y, x])))
+  };
+}
+
+function normalizeGeometryForCenter(geometry: ForestGeometry, center: LatLng) {
+  const point = representativePoint(geometry);
+  const swappedGeometry = swapGeometryAxes(geometry);
+  const swappedPoint = representativePoint(swappedGeometry);
+  if (!point) return swappedPoint ? { geometry: swappedGeometry, point: swappedPoint } : null;
+  if (!swappedPoint) return { geometry, point };
+  return distanceMeters(center, swappedPoint) < distanceMeters(center, point)
+    ? { geometry: swappedGeometry, point: swappedPoint }
+    : { geometry, point };
+}
+
 function bboxAround(center: LatLng, radiusMeters: number) {
   const latDelta = radiusMeters / 111320;
   const lonDelta = radiusMeters / (111320 * Math.max(0.2, Math.cos(center.lat * Math.PI / 180)));
@@ -104,27 +133,59 @@ function bboxAround(center: LatLng, radiusMeters: number) {
   };
 }
 
+async function fetchIgnForestPage(variant: WfsVariant, bbox: ReturnType<typeof bboxAround>, startIndex: number) {
+  const params = new URLSearchParams({
+    SERVICE: 'WFS',
+    VERSION: '2.0.0',
+    REQUEST: 'GetFeature',
+    TYPENAMES: FOREST_LAYER,
+    SRSNAME: variant.srsName,
+    BBOX: variant.bbox(bbox),
+    OUTPUTFORMAT: 'application/json',
+    COUNT: '600',
+    STARTINDEX: String(startIndex)
+  });
+  const payload = await fetchJson(`${IGN_WFS}?${params}`);
+  return Array.isArray(payload?.features) ? payload.features as any[] : [];
+}
+
 async function fetchIgnForestFeatures(center: LatLng, radiusMeters: number) {
   const bbox = bboxAround(center, radiusMeters);
-  const features: any[] = [];
-  for (let startIndex = 0; startIndex < MAX_WFS_FEATURES; startIndex += 600) {
-    const params = new URLSearchParams({
-      SERVICE: 'WFS',
-      VERSION: '2.0.0',
-      REQUEST: 'GetFeature',
-      TYPENAMES: FOREST_LAYER,
-      SRSNAME: 'EPSG:4326',
-      BBOX: `${bbox.west},${bbox.south},${bbox.east},${bbox.north},urn:ogc:def:crs:EPSG::4326`,
-      OUTPUTFORMAT: 'application/json',
-      COUNT: '600',
-      STARTINDEX: String(startIndex)
-    });
-    const payload = await fetchJson(`${IGN_WFS}?${params}`);
-    const page = Array.isArray(payload?.features) ? payload.features : [];
-    features.push(...page);
-    if (page.length < 600) break;
+  const variants: WfsVariant[] = [
+    {
+      srsName: 'CRS:84',
+      bbox: (box) => `${box.west},${box.south},${box.east},${box.north},CRS:84`
+    },
+    {
+      srsName: 'urn:ogc:def:crs:OGC::CRS84',
+      bbox: (box) => `${box.west},${box.south},${box.east},${box.north},urn:ogc:def:crs:OGC::CRS84`
+    },
+    {
+      srsName: 'EPSG:4326',
+      bbox: (box) => `${box.south},${box.west},${box.north},${box.east},urn:ogc:def:crs:EPSG::4326`
+    },
+    {
+      srsName: 'EPSG:4326',
+      bbox: (box) => `${box.west},${box.south},${box.east},${box.north},EPSG:4326`
+    }
+  ];
+
+  let lastError: unknown = null;
+  for (const variant of variants) {
+    try {
+      const features: any[] = [];
+      for (let startIndex = 0; startIndex < MAX_WFS_FEATURES; startIndex += 600) {
+        const page = await fetchIgnForestPage(variant, bbox, startIndex);
+        features.push(...page);
+        if (page.length < 600) break;
+      }
+      if (features.length) return features;
+    } catch (error) {
+      lastError = error;
+    }
   }
-  return features;
+  if (lastError) throw lastError;
+  return [];
 }
 
 function offsetPoint(point: LatLng, northMeters: number, eastMeters: number): LatLng {
@@ -183,10 +244,12 @@ export async function fetchForestZones(center: LatLng, radiusMeters = 25000): Pr
 
   const parsed = features
     .map((feature) => {
-      const geometry = toForestGeometry(feature.geometry);
-      if (!geometry) return null;
-      const point = representativePoint(geometry);
-      if (!point || distanceMeters(center, point) > radiusMeters * 1.12) return null;
+      const rawGeometry = toForestGeometry(feature.geometry);
+      if (!rawGeometry) return null;
+      const normalized = normalizeGeometryForCenter(rawGeometry, center);
+      if (!normalized) return null;
+      const { geometry, point } = normalized;
+      if (distanceMeters(center, point) > radiusMeters * 1.18) return null;
       const properties = (feature.properties ?? {}) as Record<string, unknown>;
       const forestCode = prop(properties, 'CODE_TFV');
       const forestType = prop(properties, 'TFV', 'TFV_G11');
@@ -218,7 +281,9 @@ export async function fetchForestZones(center: LatLng, radiusMeters = 25000): Pr
     .sort((a, b) => a.distance - b.distance)
     .slice(0, MAX_ANALYSED_ZONES);
 
-  if (!parsed.length) throw new Error('Aucune formation BD Forêt IGN trouvée dans ce rayon');
+  if (!parsed.length) {
+    throw new Error('BD Forêt IGN : aucune parcelle exploitable retournée pour cette zone');
+  }
 
   const terrainPoints = parsed.flatMap((zone) => [
     { lat: zone.lat, lon: zone.lon },
