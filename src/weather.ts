@@ -1,4 +1,5 @@
 import type { WeatherSnapshot } from './domain';
+import { getCachedWeather, putCachedWeather } from './offline';
 
 const avg = (values: Array<number | null | undefined>) => {
   const usable = values.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
@@ -43,7 +44,7 @@ function normalizeWeather(data: any, at: Date): WeatherSnapshot {
   };
 }
 
-async function fetchRecentWeather(lat: number, lon: number, at: Date): Promise<WeatherSnapshot> {
+async function fetchRecentWeatherNetwork(lat: number, lon: number, at: Date): Promise<WeatherSnapshot> {
   const params = new URLSearchParams({
     latitude: lat.toFixed(5),
     longitude: lon.toFixed(5),
@@ -58,14 +59,7 @@ async function fetchRecentWeather(lat: number, lon: number, at: Date): Promise<W
   return normalizeWeather(await response.json(), at);
 }
 
-export function fetchCurrentWeather(lat: number, lon: number) {
-  return fetchRecentWeather(lat, lon, new Date());
-}
-
-export async function fetchWeatherForDate(lat: number, lon: number, date: Date): Promise<WeatherSnapshot> {
-  const ageDays = Math.abs(Date.now() - date.getTime()) / 86400000;
-  if (ageDays <= 28) return fetchRecentWeather(lat, lon, date);
-
+async function fetchArchiveWeatherNetwork(lat: number, lon: number, date: Date): Promise<WeatherSnapshot> {
   const start = new Date(date);
   start.setDate(start.getDate() - 30);
   const params = new URLSearchParams({
@@ -80,4 +74,41 @@ export async function fetchWeatherForDate(lat: number, lon: number, date: Date):
   const response = await fetch(`https://archive-api.open-meteo.com/v1/archive?${params}`);
   if (!response.ok) throw new Error('Historique météo indisponible');
   return normalizeWeather(await response.json(), date);
+}
+
+async function cachedFirst(lat: number, lon: number, date: Date, network: () => Promise<WeatherSnapshot>) {
+  const cached = await getCachedWeather(lat, lon, date);
+  const historical = Date.now() - date.getTime() > 48 * 60 * 60 * 1000;
+  const recentCacheFresh = cached && Date.now() - cached.updatedAt < 6 * 60 * 60 * 1000;
+
+  if (!navigator.onLine) {
+    if (cached) return cached.snapshot;
+    throw new Error('Météo non disponible hors ligne pour cette date');
+  }
+
+  if (cached && (historical || recentCacheFresh)) return cached.snapshot;
+
+  try {
+    const snapshot = await network();
+    await putCachedWeather(lat, lon, date, snapshot);
+    return snapshot;
+  } catch (error) {
+    if (cached) return cached.snapshot;
+    throw error;
+  }
+}
+
+export function fetchCurrentWeather(lat: number, lon: number) {
+  const now = new Date();
+  return cachedFirst(lat, lon, now, () => fetchRecentWeatherNetwork(lat, lon, now));
+}
+
+export async function fetchWeatherForDate(lat: number, lon: number, date: Date): Promise<WeatherSnapshot> {
+  const ageDays = Math.abs(Date.now() - date.getTime()) / 86400000;
+  return cachedFirst(
+    lat,
+    lon,
+    date,
+    () => ageDays <= 28 ? fetchRecentWeatherNetwork(lat, lon, date) : fetchArchiveWeatherNetwork(lat, lon, date)
+  );
 }
