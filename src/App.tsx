@@ -99,6 +99,7 @@ export default function App() {
   const mapNode = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const photoInput = useRef<HTMLInputElement | null>(null);
+  const loadedCenterRef = useRef<LatLng>(FALLBACK);
 
   const [species, setSpecies] = useState<Species>('cepes');
   const [theme, setTheme] = useState<ThemeMode>(() => loadTheme());
@@ -202,6 +203,8 @@ export default function App() {
         id: 'picked', type: 'circle', source: 'picked',
         paint: { 'circle-radius': 9, 'circle-color': '#ffffff', 'circle-stroke-width': 3, 'circle-stroke-color': '#d61536' }
       });
+      const center = map.getCenter();
+      setPosition({ lat: center.lat, lon: center.lng });
       setMapReady(true);
     });
 
@@ -253,6 +256,7 @@ export default function App() {
     setLoading(true);
     setNotice(null);
     setPosition(target);
+    loadedCenterRef.current = target;
     setZones([]);
     setWeather(null);
     setSelectedId(null);
@@ -277,10 +281,10 @@ export default function App() {
     if (!map) return;
     let timer: number | undefined;
     const onMoveEnd = () => {
-      if (loading) return;
       const center = map.getCenter();
       const target = { lat: center.lat, lon: center.lng };
-      if (distanceMeters(position, target) < VIEWPORT_RELOAD_DISTANCE_METERS) return;
+      setPosition(target);
+      if (loading || distanceMeters(loadedCenterRef.current, target) < VIEWPORT_RELOAD_DISTANCE_METERS) return;
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         void loadArea(target, false);
@@ -291,7 +295,7 @@ export default function App() {
       if (timer) window.clearTimeout(timer);
       map.off('moveend', onMoveEnd);
     };
-  }, [mapReady, loading, position.lat, position.lon]);
+  }, [mapReady, loading]);
 
   useEffect(() => {
     navigator.geolocation?.getCurrentPosition(
