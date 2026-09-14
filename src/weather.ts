@@ -49,6 +49,7 @@ function normalizeWeather(data: any, at: Date): WeatherSnapshot {
     rain84: sum(trailingRain(84)),
     maxRainEvent30: max(trailingRain(30)) ?? 0,
     airTemp7: avg(trailingTemp(7)),
+    airTemp14: avg(trailingTemp(14)),
     airTemp20: avg(trailingTemp(20)),
     gdd84Base5: Number.isFinite(gdd84) ? gdd84 : null,
     soilTemp: data.hourly?.soil_temperature_6cm?.[hourIdx] ?? data.hourly?.soil_temperature_7_to_28cm?.[hourIdx] ?? null,
