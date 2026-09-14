@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: mycomap-pages-deploy
   cancel-in-progress: true
 
 jobs:
@@ -23,12 +23,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Switch Pages to GitHub Actions
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api --method PUT "repos/${GITHUB_REPOSITORY}/pages" -f build_type=workflow || true
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -48,6 +42,9 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist
+
+      - name: Wait for legacy branch Pages build
+        run: sleep 75
 
       - name: Deploy to GitHub Pages
         id: deployment
