@@ -1,13 +1,30 @@
 import { defineConfig } from 'vite';
+import type { Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
 const base = '/MycoMap/';
+const buildId = new Date().toISOString();
+
+const versionFilePlugin: Plugin = {
+  name: 'mycomap-version-file',
+  generateBundle() {
+    this.emitFile({
+      type: 'asset',
+      fileName: 'version.json',
+      source: JSON.stringify({ buildId })
+    });
+  }
+};
 
 export default defineConfig({
   base,
+  define: {
+    __MYCOMAP_BUILD_ID__: JSON.stringify(buildId)
+  },
   plugins: [
     react(),
+    versionFilePlugin,
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['icon.svg'],
@@ -16,6 +33,7 @@ export default defineConfig({
         clientsClaim: true,
         skipWaiting: true,
         navigateFallback: `${base}index.html`,
+        globIgnores: ['**/version.json'],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/data\.geopf\.fr\/wmts/i,
