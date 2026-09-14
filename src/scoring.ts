@@ -11,31 +11,51 @@ function bell(value: number | null, low: number, goodLow: number, goodHigh: numb
 }
 
 const monthAffinity: Record<Species, number[]> = {
-  cepes: [5, 5, 10, 15, 30, 48, 66, 86, 100, 100, 76, 18],
-  girolles: [5, 5, 10, 20, 45, 78, 96, 100, 96, 82, 45, 10],
-  morilles: [4, 16, 78, 100, 84, 18, 4, 2, 2, 2, 2, 2]
+  // Cèpes au sens large : fenêtre estivale possible, optimum automnal, hiver très défavorable.
+  cepes: [3, 3, 5, 8, 20, 42, 62, 80, 100, 96, 58, 10],
+  girolles: [3, 3, 5, 12, 38, 72, 94, 100, 92, 72, 28, 6],
+  morilles: [2, 8, 62, 100, 82, 20, 4, 2, 2, 2, 2, 2]
 };
 
+export function scoreSeason(species: Species, at: Date) {
+  const month = at.getMonth();
+  const current = monthAffinity[species][month] ?? 40;
+  const next = monthAffinity[species][(month + 1) % 12] ?? current;
+  const start = new Date(at.getFullYear(), month, 1).getTime();
+  const end = new Date(at.getFullYear(), month + 1, 1).getTime();
+  const progress = clamp(((at.getTime() - start) / Math.max(1, end - start)) * 100) / 100;
+  return Math.round(current * (1 - progress) + next * progress);
+}
+
 export function scoreConditions(species: Species, weather: WeatherSnapshot, at = new Date(weather.date)) {
-  const monthScore = monthAffinity[species][at.getMonth()] ?? 40;
+  const seasonScore = scoreSeason(species, at);
+  const rainLong = weather.rain26 ?? weather.rain30;
+  const tempLong = weather.airTemp20 ?? weather.airTemp7 ?? weather.soilTemp;
+
   const rainScore = species === 'morilles'
-    ? 0.55 * bell(weather.rain14, 2, 12, 42, 90) + 0.45 * bell(weather.rain30, 10, 30, 100, 180)
+    ? 0.72 * bell(rainLong, 4, 24, 90, 190) + 0.28 * bell(weather.rain7, 0.5, 5, 32, 75)
     : species === 'girolles'
-      ? 0.62 * bell(weather.rain14, 3, 18, 62, 125) + 0.38 * bell(weather.rain7, 1, 8, 35, 75)
-      : 0.68 * bell(weather.rain14, 3, 14, 55, 110) + 0.32 * bell(weather.rain7, 1, 7, 30, 70);
+      ? 0.72 * bell(rainLong, 5, 28, 105, 210) + 0.28 * bell(weather.rain7, 0.5, 6, 36, 85)
+      : 0.74 * bell(rainLong, 5, 30, 110, 220) + 0.26 * bell(weather.rain7, 0.5, 5, 34, 85);
 
   const moistureScore = species === 'morilles'
     ? bell(weather.soilMoisture, 0.08, 0.20, 0.38, 0.56)
     : bell(weather.soilMoisture, 0.07, 0.18, 0.40, 0.58);
 
-  const temp = weather.soilTemp ?? weather.airTemp7;
+  // Pour B. edulis, les longues fenêtres météo sont plus pertinentes qu'une simple pluie récente.
+  // Les plages restent volontairement larges car MycoMap couvre plusieurs espèces de cèpes et régions.
   const tempScore = species === 'morilles'
-    ? bell(temp, 2, 7, 14, 21)
+    ? bell(tempLong, 1, 7, 14, 21)
     : species === 'girolles'
-      ? bell(temp, 6, 11, 20, 27)
-      : bell(temp, 5, 10, 19, 27);
+      ? bell(tempLong, 5, 11, 20, 27)
+      : bell(tempLong, 3, 10, 16, 24);
 
-  return Math.round(clamp(monthScore * 0.22 + rainScore * 0.34 + moistureScore * 0.22 + tempScore * 0.22));
+  const climateScore = clamp(rainScore * 0.42 + moistureScore * 0.23 + tempScore * 0.35);
+
+  // La saison devient un facteur limitant et non un petit bonus additif.
+  // Une anomalie climatique peut prolonger un peu la fenêtre, mais ne crée pas un automne en plein hiver.
+  const seasonalGate = 0.14 + 0.86 * (seasonScore / 100);
+  return Math.round(clamp(climateScore * seasonalGate));
 }
 
 function tagsText(zone: ForestZone) {
@@ -52,57 +72,71 @@ function containsAny(text: string, words: string[]) {
 function forestAffinity(species: Species, zone: ForestZone) {
   const code = (zone.forestCode ?? '').toUpperCase();
   const text = tagsText(zone);
-  let score = 48;
+  let score = 38;
 
   if (species === 'cepes') {
-    if (code.startsWith('FF1G01')) score = 97;
-    else if (code.startsWith('FF1-09')) score = 97;
-    else if (code.startsWith('FF1-10')) score = 93;
-    else if (code === 'FF1-00-00' || code.startsWith('FF1-00')) score = 88;
-    else if (code.startsWith('FF31') || code.startsWith('FF32')) score = 92;
-    else if (code.startsWith('FF2G61')) score = 91;
-    else if (code.startsWith('FF2-52') || code.startsWith('FF2-53') || code.startsWith('FF2-80')) score = 85;
-    else if (code.startsWith('FF2')) score = 80;
-    else if (code.startsWith('FO3')) score = 80;
-    else if (code.startsWith('FO1')) score = 78;
-    else if (code.startsWith('FO2')) score = 73;
-    else if (code.startsWith('FP')) score = 42;
-    else if (code.startsWith('LA')) score = 18;
+    if (code.startsWith('FF1G01')) score = 88;
+    else if (code.startsWith('FF1-09')) score = 90;
+    else if (code.startsWith('FF1-10')) score = 84;
+    else if (code === 'FF1-00-00' || code.startsWith('FF1-00')) score = 50;
+    else if (code.startsWith('FF31') || code.startsWith('FF32')) score = 76;
+    else if (code.startsWith('FF2G61')) score = 80;
+    else if (code.startsWith('FF2-52') || code.startsWith('FF2-53') || code.startsWith('FF2-80')) score = 72;
+    else if (code.startsWith('FF2')) score = 60;
+    else if (code.startsWith('FO3')) score = 62;
+    else if (code.startsWith('FO1')) score = 58;
+    else if (code.startsWith('FO2')) score = 54;
+    else if (code.startsWith('FP')) score = 34;
+    else if (code.startsWith('LA')) score = 12;
 
-    if (containsAny(text, ['chêne', 'chene', 'quercus'])) score = Math.max(score, 96);
-    if (containsAny(text, ['hêtre', 'hetre', 'fagus'])) score = Math.max(score, 97);
-    if (containsAny(text, ['châtaign', 'chataign', 'castanea'])) score = Math.max(score, 92);
-    if (containsAny(text, ['épicéa', 'epicea', 'picea', 'sapin', 'abies'])) score = Math.max(score, 89);
+    if (containsAny(text, ['chêne', 'chene', 'quercus'])) score = Math.max(score, 92);
+    if (containsAny(text, ['hêtre', 'hetre', 'fagus'])) score = Math.max(score, 94);
+    if (containsAny(text, ['châtaign', 'chataign', 'castanea'])) score = Math.max(score, 88);
+    if (containsAny(text, ['pin ', 'pinus'])) score = Math.max(score, 84);
+    if (containsAny(text, ['épicéa', 'epicea', 'picea', 'sapin', 'abies'])) score = Math.max(score, 82);
+    if (containsAny(text, ['bouleau', 'betula'])) score = Math.max(score, 72);
+
+    const hostKnown = containsAny(text, [
+      'chêne', 'chene', 'quercus', 'hêtre', 'hetre', 'fagus', 'châtaign', 'chataign', 'castanea',
+      'pin ', 'pinus', 'épicéa', 'epicea', 'picea', 'sapin', 'abies', 'bouleau', 'betula'
+    ]);
+    if (!hostKnown && containsAny(text, ['feuillus', 'feuillu', 'îlot', 'ilot'])) score = Math.min(score, 56);
   } else if (species === 'girolles') {
-    if (code.startsWith('FF1G01')) score = 94;
-    else if (code.startsWith('FF1-09')) score = 96;
-    else if (code.startsWith('FF1-10')) score = 89;
-    else if (code === 'FF1-00-00' || code.startsWith('FF1-00')) score = 88;
-    else if (code.startsWith('FF31') || code.startsWith('FF32')) score = 93;
-    else if (code.startsWith('FF2G61')) score = 95;
-    else if (code.startsWith('FF2-52') || code.startsWith('FF2-53') || code.startsWith('FF2-80')) score = 92;
-    else if (code.startsWith('FF2')) score = 87;
-    else if (code.startsWith('FO3')) score = 82;
-    else if (code.startsWith('FO1') || code.startsWith('FO2')) score = 78;
-    else if (code.startsWith('FP')) score = 45;
-    else if (code.startsWith('LA')) score = 20;
+    if (code.startsWith('FF1G01')) score = 86;
+    else if (code.startsWith('FF1-09')) score = 90;
+    else if (code.startsWith('FF1-10')) score = 82;
+    else if (code === 'FF1-00-00' || code.startsWith('FF1-00')) score = 52;
+    else if (code.startsWith('FF31') || code.startsWith('FF32')) score = 80;
+    else if (code.startsWith('FF2G61')) score = 86;
+    else if (code.startsWith('FF2-52') || code.startsWith('FF2-53') || code.startsWith('FF2-80')) score = 82;
+    else if (code.startsWith('FF2')) score = 68;
+    else if (code.startsWith('FO3')) score = 64;
+    else if (code.startsWith('FO1') || code.startsWith('FO2')) score = 58;
+    else if (code.startsWith('FP')) score = 36;
+    else if (code.startsWith('LA')) score = 14;
 
-    if (containsAny(text, ['hêtre', 'hetre', 'fagus', 'chêne', 'chene', 'quercus'])) score = Math.max(score, 93);
-    if (containsAny(text, ['pin ', 'pinus', 'épicéa', 'epicea', 'picea', 'sapin', 'abies'])) score = Math.max(score, 91);
-    if (containsAny(text, ['bouleau', 'betula'])) score = Math.max(score, 90);
+    if (containsAny(text, ['hêtre', 'hetre', 'fagus', 'chêne', 'chene', 'quercus'])) score = Math.max(score, 90);
+    if (containsAny(text, ['pin ', 'pinus', 'épicéa', 'epicea', 'picea', 'sapin', 'abies'])) score = Math.max(score, 88);
+    if (containsAny(text, ['bouleau', 'betula'])) score = Math.max(score, 86);
+
+    const hostKnown = containsAny(text, [
+      'hêtre', 'hetre', 'fagus', 'chêne', 'chene', 'quercus', 'pin ', 'pinus',
+      'épicéa', 'epicea', 'picea', 'sapin', 'abies', 'bouleau', 'betula'
+    ]);
+    if (!hostKnown && containsAny(text, ['feuillus', 'feuillu', 'îlot', 'ilot'])) score = Math.min(score, 58);
   } else {
-    if (code.startsWith('FP')) score = 96;
-    else if (code.startsWith('FO1')) score = 76;
-    else if (code.startsWith('FF1')) score = 66;
-    else if (code.startsWith('FF31') || code.startsWith('FF32') || code.startsWith('FO3')) score = 57;
-    else if (code.startsWith('FO2')) score = 42;
-    else if (code.startsWith('FF2')) score = 30;
-    else if (code.startsWith('LA')) score = 28;
+    if (code.startsWith('FP')) score = 88;
+    else if (code.startsWith('FO1')) score = 65;
+    else if (code.startsWith('FF1')) score = 50;
+    else if (code.startsWith('FF31') || code.startsWith('FF32') || code.startsWith('FO3')) score = 48;
+    else if (code.startsWith('FO2')) score = 38;
+    else if (code.startsWith('FF2')) score = 28;
+    else if (code.startsWith('LA')) score = 24;
 
-    if (containsAny(text, ['frêne', 'frene', 'fraxinus'])) score = Math.max(score, 100);
-    if (containsAny(text, ['orme', 'ulmus'])) score = Math.max(score, 98);
-    if (containsAny(text, ['peuplier', 'populus'])) score = Math.max(score, 96);
-    if (containsAny(text, ['pommier', 'malus', 'verger'])) score = Math.max(score, 93);
+    if (containsAny(text, ['frêne', 'frene', 'fraxinus'])) score = Math.max(score, 96);
+    if (containsAny(text, ['orme', 'ulmus'])) score = Math.max(score, 94);
+    if (containsAny(text, ['peuplier', 'populus'])) score = Math.max(score, 91);
+    if (containsAny(text, ['pommier', 'malus', 'verger'])) score = Math.max(score, 88);
   }
   return clamp(score);
 }
@@ -161,7 +195,7 @@ function drainageAffinity(species: Species, soil: SoilProfile) {
 }
 
 function soilAffinity(species: Species, soil?: SoilProfile) {
-  if (!soil) return 55;
+  if (!soil) return 52;
   const phScore = phAffinity(species, soil.ph);
   const textureScore = textureAffinity(species, soil);
   const drainageScore = drainageAffinity(species, soil);
@@ -176,11 +210,14 @@ export function scoreHabitat(species: Species, zone: ForestZone) {
     aspectAffinity(species, zone.aspect) * 0.15
   );
   const soilScore = soilAffinity(species, zone.soil);
+  const weighted = forestScore * 0.64 + soilScore * 0.26 + terrainScore * 0.10;
+  // Sans hôte forestier convaincant, relief et sol ne suffisent pas à fabriquer un hotspot.
+  const habitatScore = forestScore < 60 ? Math.min(weighted, forestScore + 8) : weighted;
   return {
     forestScore: Math.round(forestScore),
     terrainScore,
     soilScore,
-    habitatScore: Math.round(forestScore * 0.58 + terrainScore * 0.17 + soilScore * 0.25)
+    habitatScore: Math.round(clamp(habitatScore))
   };
 }
 
@@ -238,9 +275,16 @@ function soilReason(zone: ForestZone) {
 
 export function scoreZone(species: Species, zone: ForestZone, weather: WeatherSnapshot, observations: Observation[]) {
   const habitat = scoreHabitat(species, zone);
-  const conditionScore = scoreConditions(species, weather);
+  const at = new Date(weather.date);
+  const seasonScore = scoreSeason(species, at);
+  const conditionScore = scoreConditions(species, weather, at);
   const correction = personalCorrection(species, zone, observations);
-  const finalScore = Math.round(clamp(habitat.habitatScore * 0.62 + conditionScore * 0.38 + correction));
+
+  // L'habitat fixe le plafond. Les conditions déterminent la part de ce potentiel
+  // réellement accessible maintenant. On évite ainsi qu'une météo idéale transforme
+  // une forêt seulement plausible en hotspot.
+  const availabilityFactor = 0.18 + 0.82 * (conditionScore / 100);
+  const finalScore = Math.round(clamp(habitat.habitatScore * availabilityFactor + correction));
   const terrain = zone.elevation == null
     ? 'Relief IGN indisponible'
     : `${Math.round(zone.elevation)} m${zone.slope == null ? '' : ` · pente ${zone.slope.toFixed(0)}° · ${aspectLabel(zone.aspect)}`}`;
@@ -256,7 +300,10 @@ export function scoreZone(species: Species, zone: ForestZone, weather: WeatherSn
       `Sol ${habitat.soilScore}/100`,
       soilReason(zone),
       `Terrain ${habitat.terrainScore}/100`,
+      `Saison ${seasonScore}/100`,
       `Moment ${conditionScore}/100`,
+      weather.rain26 != null ? `Pluie 26 j ${weather.rain26.toFixed(0)} mm` : `Pluie 30 j ${weather.rain30.toFixed(0)} mm`,
+      (weather.airTemp20 ?? weather.airTemp7) == null ? 'Température longue —' : `Temp. 20 j ${(weather.airTemp20 ?? weather.airTemp7)!.toFixed(1)} °C`,
       correction === 0 ? 'Historique neutre' : `Historique ${correction > 0 ? '+' : ''}${correction}`,
       terrain
     ]
