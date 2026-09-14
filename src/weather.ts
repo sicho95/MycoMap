@@ -76,7 +76,13 @@ async function fetchArchiveWeatherNetwork(lat: number, lon: number, date: Date):
   return normalizeWeather(await response.json(), date);
 }
 
-async function cachedFirst(lat: number, lon: number, date: Date, network: () => Promise<WeatherSnapshot>) {
+async function cachedFirst(
+  lat: number,
+  lon: number,
+  date: Date,
+  network: () => Promise<WeatherSnapshot>,
+  force = false
+) {
   const cached = await getCachedWeather(lat, lon, date);
   const historical = Date.now() - date.getTime() > 48 * 60 * 60 * 1000;
   const recentCacheFresh = cached && Date.now() - cached.updatedAt < 6 * 60 * 60 * 1000;
@@ -86,7 +92,7 @@ async function cachedFirst(lat: number, lon: number, date: Date, network: () => 
     throw new Error('Météo non disponible hors ligne pour cette date');
   }
 
-  if (cached && (historical || recentCacheFresh)) return cached.snapshot;
+  if (!force && cached && (historical || recentCacheFresh)) return cached.snapshot;
 
   try {
     const snapshot = await network();
@@ -98,17 +104,18 @@ async function cachedFirst(lat: number, lon: number, date: Date, network: () => 
   }
 }
 
-export function fetchCurrentWeather(lat: number, lon: number) {
+export function fetchCurrentWeather(lat: number, lon: number, force = false) {
   const now = new Date();
-  return cachedFirst(lat, lon, now, () => fetchRecentWeatherNetwork(lat, lon, now));
+  return cachedFirst(lat, lon, now, () => fetchRecentWeatherNetwork(lat, lon, now), force);
 }
 
-export async function fetchWeatherForDate(lat: number, lon: number, date: Date): Promise<WeatherSnapshot> {
+export async function fetchWeatherForDate(lat: number, lon: number, date: Date, force = false): Promise<WeatherSnapshot> {
   const ageDays = Math.abs(Date.now() - date.getTime()) / 86400000;
   return cachedFirst(
     lat,
     lon,
     date,
-    () => ageDays <= 28 ? fetchRecentWeatherNetwork(lat, lon, date) : fetchArchiveWeatherNetwork(lat, lon, date)
+    () => ageDays <= 28 ? fetchRecentWeatherNetwork(lat, lon, date) : fetchArchiveWeatherNetwork(lat, lon, date),
+    force
   );
 }
