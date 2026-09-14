@@ -22,7 +22,6 @@ import { fetchCurrentWeather, fetchWeatherForDate } from './weather';
 
 const FALLBACK: LatLng = { lat: 48.78, lon: 2.26 };
 const IGN_PLAN_TILE = 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/png';
-const INRA_SOIL_TILE = 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=INRA.CARTE.SOLS&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/png';
 const VIEWPORT_RELOAD_DISTANCE_METERS = 9000;
 
 type Sheet = 'observation' | 'spots' | 'data' | null;
@@ -69,7 +68,7 @@ function polygonGeojson(zones: PotentialPoint[]) {
       .map((zone) => ({
         type: 'Feature' as const,
         geometry: zone.geometry!,
-        properties: Object.fromEntries(Object.entries(zone).filter(([key]) => !['geometry'].includes(key)))
+        properties: Object.fromEntries(Object.entries(zone).filter(([key]) => key !== 'geometry'))
       }))
   };
 }
@@ -84,6 +83,16 @@ function nextTheme(theme: ThemeMode): ThemeMode {
   if (theme === 'auto') return 'light';
   if (theme === 'light') return 'dark';
   return 'auto';
+}
+
+function aspectLabel(aspect: number | null) {
+  if (aspect == null) return 'terrain plat / non déterminé';
+  const labels = ['Nord', 'Nord-Est', 'Est', 'Sud-Est', 'Sud', 'Sud-Ouest', 'Ouest', 'Nord-Ouest'];
+  return labels[Math.round(aspect / 45) % 8];
+}
+
+function numberOrDash(value: number | null | undefined, digits = 0) {
+  return value == null || !Number.isFinite(value) ? '—' : value.toFixed(digits);
 }
 
 export default function App() {
@@ -103,7 +112,6 @@ export default function App() {
   const [pickedLocation, setPickedLocation] = useState<LatLng | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [showSoils, setShowSoils] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>({
     outcome: 'found', count: 1, durationMinutes: 60, observedAt: new Date(), location: null, source: 'gps'
@@ -115,6 +123,14 @@ export default function App() {
   }, [zones, weather, species, observations]);
 
   const selected = useMemo(() => potentials.find((item) => item.id === selectedId) ?? null, [potentials, selectedId]);
+
+  const dataTarget = useMemo(() => {
+    if (selected) return selected;
+    if (!potentials.length) return null;
+    return potentials.reduce((closest, candidate) =>
+      distanceMeters(candidate, position) < distanceMeters(closest, position) ? candidate : closest
+    );
+  }, [selected, potentials, position]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -136,15 +152,8 @@ export default function App() {
       cooperativeGestures: false
     });
     map.doubleClickZoom.disable();
-    map.addControl(new maplibregl.AttributionControl({ compact: true }), 'top-left');
 
     map.on('load', () => {
-      map.addSource('soils', { type: 'raster', tiles: [INRA_SOIL_TILE], tileSize: 256, attribution: '© INRAE · GIS Sol' });
-      map.addLayer({
-        id: 'soils', type: 'raster', source: 'soils', layout: { visibility: 'none' },
-        paint: { 'raster-opacity': 0.5 }
-      });
-
       map.addSource('potential-polygons', { type: 'geojson', data: polygonGeojson([]) as any });
       map.addLayer({
         id: 'potential-area', type: 'fill', source: 'potential-polygons',
@@ -239,11 +248,6 @@ export default function App() {
     const source = mapRef.current?.getSource('picked') as GeoJSONSource | undefined;
     if (source) source.setData(pointGeojson(pickedLocation ? [pickedLocation] : []));
   }, [pickedLocation, mapReady]);
-
-  useEffect(() => {
-    if (!mapReady) return;
-    if (mapRef.current?.getLayer('soils')) mapRef.current.setLayoutProperty('soils', 'visibility', showSoils ? 'visible' : 'none');
-  }, [showSoils, mapReady]);
 
   async function loadArea(target: LatLng, fly = true) {
     setLoading(true);
@@ -383,6 +387,7 @@ export default function App() {
   return (
     <main className="app-shell">
       <div ref={mapNode} className="map" aria-label="Carte du potentiel mycologique" />
+      <div className="map-credit">© IGN</div>
 
       <header className="top-stack">
         <div className="brand-row glass">
@@ -470,17 +475,72 @@ export default function App() {
       )}
 
       {sheet === 'data' && (
-        <section className="sheet" aria-modal="true">
+        <section className="sheet sheet-data" aria-modal="true">
           <div className="grabber" />
-          <div className="sheet-title"><div><small>Transparence du score</small><h2>Données utilisées</h2></div><button className="icon-button" onClick={() => setSheet(null)}><X size={20} /></button></div>
-          <div className="data-grid">
-            <div className="data-item ok"><b>Forêt</b><span>IGN BD Forêt v2 · polygones réels, 32 formations, essence et code TFV.</span></div>
-            <div className="data-item ok"><b>Relief</b><span>IGN RGE ALTI · altitude + échantillonnage N/S/E/O pour pente et exposition.</span></div>
-            <div className="data-item ok"><b>Météo</b><span>Pluie 3/7/14/30 j, température et humidité du sol via Open‑Meteo.</span></div>
-            <div className="data-item ok"><b>Sols</b><span>SoilGrids structuré : pH, sable/limon/argile, éléments grossiers, réserve utile, texture et drainage estimé. Couche INRAE/GIS Sol en surimpression.</span></div>
-            <div className="data-item private"><b>Ton historique</b><span>Reste local. Il corrige les zones autour de tes sorties selon le résultat, l’effort et les conditions du jour.</span></div>
-          </div>
-          <button className="secondary-button" onClick={() => setShowSoils((value) => !value)}>{showSoils ? 'Masquer la carte des sols' : 'Afficher la carte des sols'}</button>
+          <div className="sheet-title"><div><small>{selected ? 'Parcelle sélectionnée' : 'Parcelle la plus proche du centre'}</small><h2>Données de la zone</h2></div><button className="icon-button" onClick={() => setSheet(null)}><X size={20} /></button></div>
+
+          {!dataTarget || !weather ? (
+            <div className="empty">{loading ? 'Analyse de la zone en cours…' : 'Aucune parcelle analysée disponible ici pour le moment.'}</div>
+          ) : (
+            <>
+              <div className="data-summary">
+                <div className="data-total" style={{ color: scoreColor(dataTarget.finalScore) }}>{dataTarget.finalScore}</div>
+                <div><b>{scoreLabel(dataTarget.finalScore)}</b><span>{dataTarget.name}</span><small>{dataTarget.lat.toFixed(5)}, {dataTarget.lon.toFixed(5)}</small></div>
+              </div>
+
+              <div className="score-strip">
+                <div><b>{dataTarget.forestScore}</b><span>Forêt</span></div>
+                <div><b>{dataTarget.soilScore}</b><span>Sol</span></div>
+                <div><b>{dataTarget.terrainScore}</b><span>Relief</span></div>
+                <div><b>{dataTarget.conditionScore}</b><span>Moment</span></div>
+                <div><b>{dataTarget.personalCorrection > 0 ? `+${dataTarget.personalCorrection}` : dataTarget.personalCorrection}</b><span>Terrain réel</span></div>
+              </div>
+
+              <div className="data-section">
+                <h3>Forêt</h3>
+                <div className="metric-row"><span>Formation</span><b>{dataTarget.forestType || dataTarget.name || '—'}</b></div>
+                <div className="metric-row"><span>Essence dominante</span><b>{dataTarget.essence || 'Non précisée'}</b></div>
+                <div className="metric-row"><span>Code IGN</span><b>{dataTarget.forestCode || '—'}</b></div>
+              </div>
+
+              <div className="data-section">
+                <h3>Relief</h3>
+                <div className="metric-row"><span>Altitude</span><b>{numberOrDash(dataTarget.elevation)} m</b></div>
+                <div className="metric-row"><span>Pente</span><b>{numberOrDash(dataTarget.slope, 1)}°</b></div>
+                <div className="metric-row"><span>Exposition</span><b>{aspectLabel(dataTarget.aspect)}</b></div>
+              </div>
+
+              <div className="data-section">
+                <h3>Sol</h3>
+                {dataTarget.soil ? (
+                  <>
+                    <div className="metric-row"><span>pH</span><b>{numberOrDash(dataTarget.soil.ph, 1)}</b></div>
+                    <div className="metric-row"><span>Texture</span><b>{dataTarget.soil.textureClass}</b></div>
+                    <div className="metric-row"><span>Drainage estimé</span><b>{dataTarget.soil.drainageClass}</b></div>
+                    <div className="metric-row"><span>Sable</span><b>{numberOrDash(dataTarget.soil.sandPct, 1)} %</b></div>
+                    <div className="metric-row"><span>Limon</span><b>{numberOrDash(dataTarget.soil.siltPct, 1)} %</b></div>
+                    <div className="metric-row"><span>Argile</span><b>{numberOrDash(dataTarget.soil.clayPct, 1)} %</b></div>
+                    <div className="metric-row"><span>Éléments grossiers</span><b>{numberOrDash(dataTarget.soil.coarseFragmentsPct, 1)} %</b></div>
+                    <div className="metric-row"><span>Réserve en eau estimée</span><b>{numberOrDash(dataTarget.soil.availableWaterPct, 1)} %</b></div>
+                  </>
+                ) : <div className="data-unavailable">Données pédologiques structurées indisponibles pour cette parcelle.</div>}
+              </div>
+
+              <div className="data-section">
+                <h3>Météo utilisée</h3>
+                <div className="metric-row"><span>Pluie 3 jours</span><b>{numberOrDash(weather.rain3, 1)} mm</b></div>
+                <div className="metric-row"><span>Pluie 7 jours</span><b>{numberOrDash(weather.rain7, 1)} mm</b></div>
+                <div className="metric-row"><span>Pluie 14 jours</span><b>{numberOrDash(weather.rain14, 1)} mm</b></div>
+                <div className="metric-row"><span>Pluie 30 jours</span><b>{numberOrDash(weather.rain30, 1)} mm</b></div>
+                <div className="metric-row"><span>Humidité du sol</span><b>{weather.soilMoisture == null ? '—' : `${(weather.soilMoisture * 100).toFixed(1)} %`}</b></div>
+                <div className="metric-row"><span>Température du sol</span><b>{numberOrDash(weather.soilTemp, 1)} °C</b></div>
+                <div className="metric-row"><span>Température moyenne 7 j</span><b>{numberOrDash(weather.airTemp7, 1)} °C</b></div>
+              </div>
+
+              <p className="data-note">Ces valeurs sont celles réellement utilisées par MycoMap pour le calcul affiché. Le drainage est une estimation dérivée des propriétés physiques du sol.</p>
+              <p className="data-credits">Sources : IGN BD Forêt v2 et RGE ALTI · SoilGrids 2.0 / ISRIC · Open-Meteo.</p>
+            </>
+          )}
         </section>
       )}
     </main>
