@@ -8,6 +8,10 @@ export interface LatLng {
   [key: string]: unknown;
 }
 
+export type ForestGeometry =
+  | { type: 'Polygon'; coordinates: number[][][] }
+  | { type: 'MultiPolygon'; coordinates: number[][][][] };
+
 export interface WeatherSnapshot {
   date: string;
   rain3: number;
@@ -23,7 +27,14 @@ export interface ForestZone extends LatLng {
   id: string;
   name: string;
   tags: Record<string, string>;
+  geometry?: ForestGeometry;
   elevation: number | null;
+  slope: number | null;
+  aspect: number | null;
+  forestCode?: string;
+  forestType?: string;
+  essence?: string;
+  source: 'IGN BD Forêt v2';
 }
 
 export interface Observation extends LatLng {
@@ -42,6 +53,8 @@ export interface Observation extends LatLng {
 }
 
 export interface PotentialPoint extends ForestZone {
+  forestScore: number;
+  terrainScore: number;
   habitatScore: number;
   conditionScore: number;
   personalCorrection: number;
