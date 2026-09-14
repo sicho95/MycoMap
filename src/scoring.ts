@@ -2,19 +2,28 @@ import type { ForestZone, Observation, SoilProfile, Species, WeatherSnapshot } f
 
 const clamp = (value: number, min = 0, max = 100) => Math.min(max, Math.max(min, value));
 
-function bell(value: number | null, low: number, goodLow: number, goodHigh: number, high: number) {
-  if (value == null) return 55;
+function bell(value: number | null | undefined, low: number, goodLow: number, goodHigh: number, high: number) {
+  if (value == null || !Number.isFinite(value)) return 55;
   if (value <= low || value >= high) return 8;
   if (value >= goodLow && value <= goodHigh) return 100;
   if (value < goodLow) return 8 + ((value - low) / (goodLow - low)) * 92;
   return 8 + ((high - value) / (high - goodHigh)) * 92;
 }
 
+function rising(value: number | null | undefined, low: number, good: number) {
+  if (value == null || !Number.isFinite(value)) return 55;
+  if (value <= low) return 8;
+  if (value >= good) return 100;
+  return 8 + ((value - low) / (good - low)) * 92;
+}
+
 const monthAffinity: Record<Species, number[]> = {
-  // Cèpes au sens large : fenêtre estivale possible, optimum automnal, hiver très défavorable.
-  cepes: [3, 3, 5, 8, 20, 42, 62, 80, 100, 96, 58, 10],
-  girolles: [3, 3, 5, 12, 38, 72, 94, 100, 92, 72, 28, 6],
-  morilles: [2, 8, 62, 100, 82, 20, 4, 2, 2, 2, 2, 2]
+  // "Cèpes" = B. edulis s.l. : certaines espèces du groupe sont estivales, B. edulis s.s. surtout automnal.
+  cepes: [2, 2, 3, 5, 14, 34, 55, 76, 100, 94, 50, 8],
+  // C. cibarius s.l. : été-automne, avec variations régionales.
+  girolles: [2, 2, 3, 7, 24, 58, 88, 100, 94, 68, 24, 5],
+  // Morchella spp. tempérées : fenêtre printanière courte et beaucoup plus contraignante.
+  morilles: [1, 5, 52, 100, 78, 12, 2, 1, 1, 1, 1, 1]
 };
 
 export function scoreSeason(species: Species, at: Date) {
@@ -27,35 +36,50 @@ export function scoreSeason(species: Species, at: Date) {
   return Math.round(current * (1 - progress) + next * progress);
 }
 
+function conditionCepes(weather: WeatherSnapshot, at: Date) {
+  const season = scoreSeason('cepes', at);
+  // Suivi décennal de B. edulis : pic autour de 13 °C sur 20 j et réponse positive à la pluie sur 26 j.
+  const temp20 = bell(weather.airTemp20 ?? weather.airTemp7 ?? weather.soilTemp, 4, 10.5, 15.5, 22.5);
+  const rain26 = rising(weather.rain26 ?? weather.rain30, 3, 85);
+  const moisture = bell(weather.soilMoisture, 0.06, 0.17, 0.40, 0.60);
+  const meteo = Math.sqrt(temp20 * rain26) * 0.78 + moisture * 0.22;
+  const gate = 0.06 + 0.94 * Math.pow(season / 100, 1.10);
+  return Math.round(clamp(meteo * gate));
+}
+
+function conditionGirolles(weather: WeatherSnapshot, at: Date) {
+  const season = scoreSeason('girolles', at);
+  // Les études de rendement montrent des signaux retardés sur plusieurs semaines :
+  // accumulation thermique + eau disponible 6 à 13 semaines avant l'apparition.
+  // Le GDD air >5 °C est utilisé ici comme proxy de chaleur du sol, avec un poids modéré.
+  const gdd = bell(weather.gdd84Base5, 180, 430, 700, 1150);
+  const rainLong = bell(weather.rain84 ?? weather.rain56 ?? weather.rain30, 15, 50, 150, 320);
+  const moisture = bell(weather.soilMoisture, 0.06, 0.18, 0.42, 0.62);
+  const tempNow = bell(weather.soilTemp ?? weather.airTemp7, 5, 10, 20, 28);
+  const longSignal = gdd * 0.52 + rainLong * 0.48;
+  const meteo = longSignal * 0.58 + moisture * 0.27 + tempNow * 0.15;
+  const gate = 0.05 + 0.95 * Math.pow(season / 100, 1.15);
+  return Math.round(clamp(meteo * gate));
+}
+
+function conditionMorilles(weather: WeatherSnapshot, at: Date) {
+  const season = scoreSeason('morilles', at);
+  // M. esculenta : abondance associée aux événements >10 mm dans les 30 j précédents,
+  // avec déclenchement lié au réchauffement printanier du sol.
+  const rainEvent = rising(weather.maxRainEvent30, 1, 12);
+  const rain30 = bell(weather.rain30, 3, 18, 85, 180);
+  const soilTemp = bell(weather.soilTemp, 1, 6, 16, 25);
+  const airTemp = bell(weather.airTemp20 ?? weather.airTemp7, 1, 7, 16, 24);
+  const moisture = bell(weather.soilMoisture, 0.07, 0.18, 0.42, 0.62);
+  const meteo = rainEvent * 0.24 + rain30 * 0.16 + soilTemp * 0.30 + airTemp * 0.12 + moisture * 0.18;
+  const gate = 0.02 + 0.98 * Math.pow(season / 100, 1.45);
+  return Math.round(clamp(meteo * gate));
+}
+
 export function scoreConditions(species: Species, weather: WeatherSnapshot, at = new Date(weather.date)) {
-  const seasonScore = scoreSeason(species, at);
-  const rainLong = weather.rain26 ?? weather.rain30;
-  const tempLong = weather.airTemp20 ?? weather.airTemp7 ?? weather.soilTemp;
-
-  const rainScore = species === 'morilles'
-    ? 0.72 * bell(rainLong, 4, 24, 90, 190) + 0.28 * bell(weather.rain7, 0.5, 5, 32, 75)
-    : species === 'girolles'
-      ? 0.72 * bell(rainLong, 5, 28, 105, 210) + 0.28 * bell(weather.rain7, 0.5, 6, 36, 85)
-      : 0.74 * bell(rainLong, 5, 30, 110, 220) + 0.26 * bell(weather.rain7, 0.5, 5, 34, 85);
-
-  const moistureScore = species === 'morilles'
-    ? bell(weather.soilMoisture, 0.08, 0.20, 0.38, 0.56)
-    : bell(weather.soilMoisture, 0.07, 0.18, 0.40, 0.58);
-
-  // Pour B. edulis, les longues fenêtres météo sont plus pertinentes qu'une simple pluie récente.
-  // Les plages restent volontairement larges car MycoMap couvre plusieurs espèces de cèpes et régions.
-  const tempScore = species === 'morilles'
-    ? bell(tempLong, 1, 7, 14, 21)
-    : species === 'girolles'
-      ? bell(tempLong, 5, 11, 20, 27)
-      : bell(tempLong, 3, 10, 16, 24);
-
-  const climateScore = clamp(rainScore * 0.42 + moistureScore * 0.23 + tempScore * 0.35);
-
-  // La saison devient un facteur limitant et non un petit bonus additif.
-  // Une anomalie climatique peut prolonger un peu la fenêtre, mais ne crée pas un automne en plein hiver.
-  const seasonalGate = 0.14 + 0.86 * (seasonScore / 100);
-  return Math.round(clamp(climateScore * seasonalGate));
+  if (species === 'cepes') return conditionCepes(weather, at);
+  if (species === 'girolles') return conditionGirolles(weather, at);
+  return conditionMorilles(weather, at);
 }
 
 function tagsText(zone: ForestZone) {
@@ -72,147 +96,150 @@ function containsAny(text: string, words: string[]) {
 function forestAffinity(species: Species, zone: ForestZone) {
   const code = (zone.forestCode ?? '').toUpperCase();
   const text = tagsText(zone);
-  let score = 38;
+  let score = 34;
 
   if (species === 'cepes') {
-    if (code.startsWith('FF1G01')) score = 88;
-    else if (code.startsWith('FF1-09')) score = 90;
-    else if (code.startsWith('FF1-10')) score = 84;
-    else if (code === 'FF1-00-00' || code.startsWith('FF1-00')) score = 50;
-    else if (code.startsWith('FF31') || code.startsWith('FF32')) score = 76;
-    else if (code.startsWith('FF2G61')) score = 80;
-    else if (code.startsWith('FF2-52') || code.startsWith('FF2-53') || code.startsWith('FF2-80')) score = 72;
-    else if (code.startsWith('FF2')) score = 60;
-    else if (code.startsWith('FO3')) score = 62;
-    else if (code.startsWith('FO1')) score = 58;
-    else if (code.startsWith('FO2')) score = 54;
-    else if (code.startsWith('FP')) score = 34;
-    else if (code.startsWith('LA')) score = 12;
+    // B. edulis s.l. est ectomycorhizien : l'essence hôte connue vaut plus qu'une simple classe "feuillus".
+    if (code.startsWith('FF1G01') || code.startsWith('FF1-09')) score = 72;
+    else if (code.startsWith('FF1-10')) score = 68;
+    else if (code === 'FF1-00-00' || code.startsWith('FF1-00')) score = 46;
+    else if (code.startsWith('FF31') || code.startsWith('FF32')) score = 68;
+    else if (code.startsWith('FF2G61')) score = 72;
+    else if (code.startsWith('FF2')) score = 58;
+    else if (code.startsWith('FO')) score = 50;
+    else if (code.startsWith('FP')) score = 28;
+    else if (code.startsWith('LA')) score = 10;
 
-    if (containsAny(text, ['chêne', 'chene', 'quercus'])) score = Math.max(score, 92);
     if (containsAny(text, ['hêtre', 'hetre', 'fagus'])) score = Math.max(score, 94);
-    if (containsAny(text, ['châtaign', 'chataign', 'castanea'])) score = Math.max(score, 88);
-    if (containsAny(text, ['pin ', 'pinus'])) score = Math.max(score, 84);
+    if (containsAny(text, ['chêne', 'chene', 'quercus'])) score = Math.max(score, 92);
+    if (containsAny(text, ['châtaign', 'chataign', 'castanea'])) score = Math.max(score, 87);
+    if (containsAny(text, ['pin ', 'pinus'])) score = Math.max(score, 86);
     if (containsAny(text, ['épicéa', 'epicea', 'picea', 'sapin', 'abies'])) score = Math.max(score, 82);
-    if (containsAny(text, ['bouleau', 'betula'])) score = Math.max(score, 72);
+    if (containsAny(text, ['bouleau', 'betula'])) score = Math.max(score, 70);
 
     const hostKnown = containsAny(text, [
-      'chêne', 'chene', 'quercus', 'hêtre', 'hetre', 'fagus', 'châtaign', 'chataign', 'castanea',
+      'hêtre', 'hetre', 'fagus', 'chêne', 'chene', 'quercus', 'châtaign', 'chataign', 'castanea',
       'pin ', 'pinus', 'épicéa', 'epicea', 'picea', 'sapin', 'abies', 'bouleau', 'betula'
     ]);
-    if (!hostKnown && containsAny(text, ['feuillus', 'feuillu', 'îlot', 'ilot'])) score = Math.min(score, 56);
+    if (!hostKnown && containsAny(text, ['feuillus', 'feuillu', 'îlot', 'ilot'])) score = Math.min(score, 50);
   } else if (species === 'girolles') {
-    if (code.startsWith('FF1G01')) score = 86;
-    else if (code.startsWith('FF1-09')) score = 90;
-    else if (code.startsWith('FF1-10')) score = 82;
-    else if (code === 'FF1-00-00' || code.startsWith('FF1-00')) score = 52;
-    else if (code.startsWith('FF31') || code.startsWith('FF32')) score = 80;
-    else if (code.startsWith('FF2G61')) score = 86;
-    else if (code.startsWith('FF2-52') || code.startsWith('FF2-53') || code.startsWith('FF2-80')) score = 82;
-    else if (code.startsWith('FF2')) score = 68;
-    else if (code.startsWith('FO3')) score = 64;
-    else if (code.startsWith('FO1') || code.startsWith('FO2')) score = 58;
-    else if (code.startsWith('FP')) score = 36;
-    else if (code.startsWith('LA')) score = 14;
+    // Cantharellus cibarius s.l. a un spectre d'hôtes large, mais reste ectomycorhizien.
+    if (code.startsWith('FF1G01') || code.startsWith('FF1-09')) score = 72;
+    else if (code.startsWith('FF1-10')) score = 66;
+    else if (code === 'FF1-00-00' || code.startsWith('FF1-00')) score = 48;
+    else if (code.startsWith('FF31') || code.startsWith('FF32')) score = 74;
+    else if (code.startsWith('FF2G61')) score = 78;
+    else if (code.startsWith('FF2')) score = 64;
+    else if (code.startsWith('FO')) score = 54;
+    else if (code.startsWith('FP')) score = 30;
+    else if (code.startsWith('LA')) score = 12;
 
     if (containsAny(text, ['hêtre', 'hetre', 'fagus', 'chêne', 'chene', 'quercus'])) score = Math.max(score, 90);
-    if (containsAny(text, ['pin ', 'pinus', 'épicéa', 'epicea', 'picea', 'sapin', 'abies'])) score = Math.max(score, 88);
+    if (containsAny(text, ['pin ', 'pinus', 'épicéa', 'epicea', 'picea', 'sapin', 'abies'])) score = Math.max(score, 90);
     if (containsAny(text, ['bouleau', 'betula'])) score = Math.max(score, 86);
-
-    const hostKnown = containsAny(text, [
-      'hêtre', 'hetre', 'fagus', 'chêne', 'chene', 'quercus', 'pin ', 'pinus',
-      'épicéa', 'epicea', 'picea', 'sapin', 'abies', 'bouleau', 'betula'
-    ]);
-    if (!hostKnown && containsAny(text, ['feuillus', 'feuillu', 'îlot', 'ilot'])) score = Math.min(score, 58);
+    if (containsAny(text, ['châtaign', 'chataign', 'castanea', 'noisetier', 'corylus'])) score = Math.max(score, 82);
   } else {
-    if (code.startsWith('FP')) score = 88;
-    else if (code.startsWith('FO1')) score = 65;
-    else if (code.startsWith('FF1')) score = 50;
-    else if (code.startsWith('FF31') || code.startsWith('FF32') || code.startsWith('FO3')) score = 48;
-    else if (code.startsWith('FO2')) score = 38;
-    else if (code.startsWith('FF2')) score = 28;
-    else if (code.startsWith('LA')) score = 24;
+    // Les Morchella regroupent des écologies différentes (saprotrophie, associations végétales,
+    // perturbations/incendies selon les espèces). La forêt seule ne doit donc jamais suffire.
+    if (code.startsWith('FP')) score = 62;
+    else if (code.startsWith('FO1')) score = 52;
+    else if (code.startsWith('FF1')) score = 42;
+    else if (code.startsWith('FF31') || code.startsWith('FF32') || code.startsWith('FO3')) score = 40;
+    else if (code.startsWith('FO2')) score = 34;
+    else if (code.startsWith('FF2')) score = 30;
+    else if (code.startsWith('LA')) score = 22;
 
-    if (containsAny(text, ['frêne', 'frene', 'fraxinus'])) score = Math.max(score, 96);
-    if (containsAny(text, ['orme', 'ulmus'])) score = Math.max(score, 94);
-    if (containsAny(text, ['peuplier', 'populus'])) score = Math.max(score, 91);
-    if (containsAny(text, ['pommier', 'malus', 'verger'])) score = Math.max(score, 88);
+    if (containsAny(text, ['orme', 'ulmus'])) score = Math.max(score, 84);
+    if (containsAny(text, ['frêne', 'frene', 'fraxinus'])) score = Math.max(score, 80);
+    if (containsAny(text, ['peuplier', 'populus'])) score = Math.max(score, 76);
+    if (containsAny(text, ['tilleul', 'tilia', 'noyer', 'juglans'])) score = Math.max(score, 72);
+    if (containsAny(text, ['pommier', 'malus', 'verger'])) score = Math.max(score, 76);
   }
   return clamp(score);
 }
 
 function elevationAffinity(species: Species, elevation: number | null) {
-  if (elevation == null) return 58;
-  if (species === 'morilles') return bell(elevation, -50, 60, 900, 1700);
-  if (species === 'girolles') return bell(elevation, -50, 70, 1250, 2100);
-  return bell(elevation, -50, 70, 1450, 2300);
+  if (elevation == null) return 55;
+  // Relief = modulateur faible : les études locales ne justifient pas d'en faire une règle universelle.
+  if (species === 'morilles') return bell(elevation, -80, 30, 1300, 2600);
+  if (species === 'girolles') return bell(elevation, -80, 30, 1500, 2400);
+  return bell(elevation, -80, 30, 1600, 2500);
 }
 
 function slopeAffinity(species: Species, slope: number | null) {
-  if (slope == null) return 58;
-  if (species === 'morilles') return bell(slope, -1, 0, 12, 34);
-  if (species === 'girolles') return bell(slope, -1, 2, 20, 42);
-  return bell(slope, -1, 2, 18, 40);
+  if (slope == null) return 55;
+  if (species === 'morilles') return bell(slope, -1, 0, 18, 42);
+  if (species === 'girolles') return bell(slope, -1, 0, 22, 45);
+  return bell(slope, -1, 0, 22, 45);
 }
 
 function aspectAffinity(species: Species, aspect: number | null) {
-  if (aspect == null) return 66;
-  const target = species === 'morilles' ? 135 : 45;
+  if (aspect == null) return 58;
+  const target = species === 'morilles' ? 330 : 45;
   const delta = Math.abs(((aspect - target + 540) % 360) - 180);
-  return clamp(100 - delta * 0.34, 42, 100);
+  return clamp(82 - delta * 0.18, 48, 82);
 }
 
 function phAffinity(species: Species, ph: number | null) {
-  if (species === 'morilles') return bell(ph, 4.4, 6.2, 7.9, 8.8);
-  if (species === 'girolles') return bell(ph, 3.1, 4.0, 5.8, 7.1);
-  return bell(ph, 3.2, 4.2, 6.2, 7.4);
+  if (species === 'morilles') return bell(ph, 4.7, 5.8, 7.0, 8.0);
+  if (species === 'girolles') return bell(ph, 3.0, 4.0, 5.5, 6.8);
+  return bell(ph, 3.0, 3.9, 5.6, 6.8);
 }
 
 function textureAffinity(species: Species, soil: SoilProfile) {
   const table: Record<Species, Record<string, number>> = {
     cepes: {
-      'sableux': 68, 'sablo-limoneux': 94, 'limoneux': 92, 'limono-argileux': 82,
-      'argilo-limoneux': 76, 'argileux': 54, 'équilibré': 96, 'inconnu': 55
+      'sableux': 88, 'sablo-limoneux': 98, 'limoneux': 78, 'limono-argileux': 62,
+      'argilo-limoneux': 58, 'argileux': 38, 'équilibré': 82, 'inconnu': 50
     },
     girolles: {
-      'sableux': 82, 'sablo-limoneux': 97, 'limoneux': 92, 'limono-argileux': 78,
-      'argilo-limoneux': 70, 'argileux': 48, 'équilibré': 95, 'inconnu': 55
+      'sableux': 94, 'sablo-limoneux': 100, 'limoneux': 76, 'limono-argileux': 58,
+      'argilo-limoneux': 52, 'argileux': 34, 'équilibré': 80, 'inconnu': 50
     },
     morilles: {
-      'sableux': 58, 'sablo-limoneux': 81, 'limoneux': 96, 'limono-argileux': 94,
-      'argilo-limoneux': 92, 'argileux': 72, 'équilibré': 93, 'inconnu': 55
+      'sableux': 58, 'sablo-limoneux': 94, 'limoneux': 98, 'limono-argileux': 88,
+      'argilo-limoneux': 86, 'argileux': 62, 'équilibré': 92, 'inconnu': 50
     }
   };
-  return table[species][soil.textureClass] ?? 55;
+  return table[species][soil.textureClass] ?? 50;
 }
 
 function drainageAffinity(species: Species, soil: SoilProfile) {
   const index = soil.drainageIndex;
-  if (index == null) return 55;
-  if (species === 'morilles') return bell(index, 5, 28, 58, 88);
-  if (species === 'girolles') return bell(index, 10, 42, 72, 96);
-  return bell(index, 8, 38, 70, 95);
+  if (index == null) return 50;
+  if (species === 'morilles') return bell(index, 8, 30, 66, 92);
+  if (species === 'girolles') return bell(index, 18, 48, 80, 98);
+  return bell(index, 12, 40, 76, 98);
 }
 
 function soilAffinity(species: Species, soil?: SoilProfile) {
-  if (!soil) return 52;
+  if (!soil) return 48;
   const phScore = phAffinity(species, soil.ph);
   const textureScore = textureAffinity(species, soil);
   const drainageScore = drainageAffinity(species, soil);
-  return Math.round(phScore * 0.48 + textureScore * 0.30 + drainageScore * 0.22);
+  return Math.round(phScore * 0.48 + textureScore * 0.32 + drainageScore * 0.20);
 }
 
 export function scoreHabitat(species: Species, zone: ForestZone) {
   const forestScore = forestAffinity(species, zone);
   const terrainScore = Math.round(
     elevationAffinity(species, zone.elevation) * 0.45 +
-    slopeAffinity(species, zone.slope) * 0.40 +
-    aspectAffinity(species, zone.aspect) * 0.15
+    slopeAffinity(species, zone.slope) * 0.35 +
+    aspectAffinity(species, zone.aspect) * 0.20
   );
   const soilScore = soilAffinity(species, zone.soil);
-  const weighted = forestScore * 0.64 + soilScore * 0.26 + terrainScore * 0.10;
-  // Sans hôte forestier convaincant, relief et sol ne suffisent pas à fabriquer un hotspot.
-  const habitatScore = forestScore < 60 ? Math.min(weighted, forestScore + 8) : weighted;
+
+  const weighted = species === 'morilles'
+    ? forestScore * 0.38 + soilScore * 0.47 + terrainScore * 0.15
+    : species === 'girolles'
+      ? forestScore * 0.56 + soilScore * 0.34 + terrainScore * 0.10
+      : forestScore * 0.60 + soilScore * 0.30 + terrainScore * 0.10;
+
+  // Un habitat inconnu/générique ne peut devenir excellent grâce au relief seul.
+  const habitatScore = forestScore < 55 && species !== 'morilles'
+    ? Math.min(weighted, forestScore + 8)
+    : weighted;
+
   return {
     forestScore: Math.round(forestScore),
     terrainScore,
@@ -273,6 +300,20 @@ function soilReason(zone: ForestZone) {
   return `${ph} · ${zone.soil.textureClass} · drainage ${zone.soil.drainageClass}`;
 }
 
+function phenologyReason(species: Species, weather: WeatherSnapshot) {
+  if (species === 'cepes') {
+    const rain = weather.rain26 ?? weather.rain30;
+    const temp = weather.airTemp20 ?? weather.airTemp7;
+    return `Signal 20/26 j · ${temp == null ? 'T° —' : `${temp.toFixed(1)} °C`} · pluie ${rain.toFixed(0)} mm`;
+  }
+  if (species === 'girolles') {
+    const rain = weather.rain84 ?? weather.rain56 ?? weather.rain30;
+    const gdd = weather.gdd84Base5;
+    return `Signal 6–13 sem. · pluie ${rain.toFixed(0)} mm${gdd == null ? '' : ` · ${gdd.toFixed(0)} DJ >5 °C`}`;
+  }
+  return `Signal printanier · pluie max 30 j ${(weather.maxRainEvent30 ?? 0).toFixed(0)} mm`;
+}
+
 export function scoreZone(species: Species, zone: ForestZone, weather: WeatherSnapshot, observations: Observation[]) {
   const habitat = scoreHabitat(species, zone);
   const at = new Date(weather.date);
@@ -280,14 +321,14 @@ export function scoreZone(species: Species, zone: ForestZone, weather: WeatherSn
   const conditionScore = scoreConditions(species, weather, at);
   const correction = personalCorrection(species, zone, observations);
 
-  // L'habitat fixe le plafond. Les conditions déterminent la part de ce potentiel
-  // réellement accessible maintenant. On évite ainsi qu'une météo idéale transforme
-  // une forêt seulement plausible en hotspot.
-  const availabilityFactor = 0.18 + 0.82 * (conditionScore / 100);
+  // Le score est un indice de potentiel, pas une probabilité de récolte.
+  // L'habitat fixe le plafond ; la phénologie/météo détermine combien de ce potentiel est actif maintenant.
+  const availabilityFactor = 0.10 + 0.90 * (conditionScore / 100);
   const finalScore = Math.round(clamp(habitat.habitatScore * availabilityFactor + correction));
   const terrain = zone.elevation == null
     ? 'Relief IGN indisponible'
     : `${Math.round(zone.elevation)} m${zone.slope == null ? '' : ` · pente ${zone.slope.toFixed(0)}° · ${aspectLabel(zone.aspect)}`}`;
+
   return {
     ...zone,
     ...habitat,
@@ -302,8 +343,7 @@ export function scoreZone(species: Species, zone: ForestZone, weather: WeatherSn
       `Terrain ${habitat.terrainScore}/100`,
       `Saison ${seasonScore}/100`,
       `Moment ${conditionScore}/100`,
-      weather.rain26 != null ? `Pluie 26 j ${weather.rain26.toFixed(0)} mm` : `Pluie 30 j ${weather.rain30.toFixed(0)} mm`,
-      (weather.airTemp20 ?? weather.airTemp7) == null ? 'Température longue —' : `Temp. 20 j ${(weather.airTemp20 ?? weather.airTemp7)!.toFixed(1)} °C`,
+      phenologyReason(species, weather),
       correction === 0 ? 'Historique neutre' : `Historique ${correction > 0 ? '+' : ''}${correction}`,
       terrain
     ]
