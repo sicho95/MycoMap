@@ -60,7 +60,9 @@ export default defineConfig({
         orientation: 'portrait-primary',
         start_url: base,
         scope: base,
+        lang: 'fr',
         icons: [
+          { src: `${base}apple-touch-icon.png?v=20260914-2`, sizes: '180x180', type: 'image/png', purpose: 'any' },
           { src: `${base}icon.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }
         ]
       }
