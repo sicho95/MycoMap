@@ -24,8 +24,31 @@ applyUpdate = registerSW({
   }
 });
 
+// iOS peut modifier la hauteur du viewport juste après le lancement d'une PWA
+// sans émettre le resize attendu par MapLibre. Un resize synthétique force le
+// canvas à reprendre exactement la taille réellement disponible.
+const refreshMapViewport = () => {
+  window.dispatchEvent(new Event('resize'));
+};
+
+const scheduleViewportRefresh = () => {
+  requestAnimationFrame(refreshMapViewport);
+  window.setTimeout(refreshMapViewport, 120);
+  window.setTimeout(refreshMapViewport, 450);
+};
+
+window.visualViewport?.addEventListener('resize', scheduleViewportRefresh);
+window.visualViewport?.addEventListener('scroll', scheduleViewportRefresh);
+window.addEventListener('orientationchange', scheduleViewportRefresh);
+window.addEventListener('pageshow', scheduleViewportRefresh);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') scheduleViewportRefresh();
+});
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <App />
   </React.StrictMode>
 );
+
+scheduleViewportRefresh();
