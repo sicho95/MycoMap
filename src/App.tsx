@@ -11,6 +11,7 @@ import {
   Plus,
   RefreshCw,
   Sun,
+  SunMoon,
   Trash2,
   X
 } from 'lucide-react';
@@ -86,10 +87,41 @@ function polygonGeojson(zones: PotentialPoint[]) {
   };
 }
 
+function SpeciesIcon({ species, size = 22 }: { species: Species; size?: number }) {
+  const common = { width: size, height: size, flex: '0 0 auto', display: 'block' } as const;
+
+  if (species === 'girolles') {
+    return (
+      <svg viewBox="0 0 24 24" style={common} aria-hidden="true">
+        <path d="M3.4 7.2C5.5 4 8.1 5 10.2 3.3c.9-.7 2.6-.7 3.5 0C16 5 18.6 4 20.6 7.2c-1.6 3.2-4.5 4.8-8.6 4.8S5 10.4 3.4 7.2Z" fill="#f3a21a" stroke="#bd6810" strokeWidth="1" strokeLinejoin="round" />
+        <path d="M10 11.2c.1 2.4-.5 4.2-2 6.6-.8 1.3.2 2.6 4 2.6s4.8-1.3 4-2.6c-1.5-2.4-2.1-4.2-2-6.6" fill="#f6b63b" stroke="#bd6810" strokeWidth="1" strokeLinejoin="round" />
+        <path d="M12 11.1 7.2 7.4M12 11.1l-2.2-5M12 11.1l2.2-5M12 11.1l4.8-3.7" fill="none" stroke="#d77b12" strokeWidth=".8" strokeLinecap="round" />
+      </svg>
+    );
+  }
+
+  if (species === 'morilles') {
+    return (
+      <svg viewBox="0 0 24 24" style={common} aria-hidden="true">
+        <path d="M8.2 12.5C7.1 9 7.8 4.6 10.6 2.4c.8-.6 2-.6 2.8 0 2.8 2.2 3.5 6.6 2.4 10.1-.5 1.5-1.9 2.4-3.8 2.4s-3.3-.9-3.8-2.4Z" fill="#9b6b38" stroke="#5f4026" strokeWidth="1" />
+        <path d="M10 14.2c.1 1.8-.5 3.8-1.1 5.2-.4 1 .6 1.8 3.1 1.8s3.5-.8 3.1-1.8c-.6-1.4-1.2-3.4-1.1-5.2" fill="#ead9b8" stroke="#9b7b54" strokeWidth="1" />
+        <path d="M9 5.1c1.5 1 4.5 1 6 0M8.5 8.1c1.8 1.1 5.2 1.1 7 0M8.5 11.1c1.8 1 5.2 1 7 0M10.2 3.5c-.6 2.8-.6 6.5 0 9.7M13.8 3.5c.6 2.8.6 6.5 0 9.7M12 2.8c-.5 3.1-.5 7.1 0 11.2" fill="none" stroke="#5f4026" strokeWidth=".65" strokeLinecap="round" opacity=".95" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg viewBox="0 0 24 24" style={common} aria-hidden="true">
+      <path d="M3.2 9.7C3.8 5.5 7.3 3.1 12 3.1s8.2 2.4 8.8 6.6c-4.7 1.2-12.9 1.2-17.6 0Z" fill="#8f5635" stroke="#613721" strokeWidth="1" />
+      <path d="M9.1 9.8c.1 2.3-.8 5.6-1.7 8.5-.4 1.4.8 2.6 4.6 2.6s5-1.2 4.6-2.6c-.9-2.9-1.8-6.2-1.7-8.5" fill="#ead6ac" stroke="#9f825d" strokeWidth="1" />
+    </svg>
+  );
+}
+
 function themeIcon(theme: ThemeMode) {
   if (theme === 'light') return <Sun size={18} />;
   if (theme === 'dark') return <Moon size={18} />;
-  return <Layers3 size={18} />;
+  return <SunMoon size={18} />;
 }
 
 function nextTheme(theme: ThemeMode): ThemeMode {
@@ -240,7 +272,10 @@ export default function App() {
 
     const selectPotential = (event: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
       const id = event.features?.[0]?.properties?.id;
-      if (id) setSelectedId(String(id));
+      if (!id) return;
+      setSelectedId(String(id));
+      setPickedLocation(null);
+      setSheet('data');
     };
     map.on('click', 'potential-point', selectPotential);
     map.on('click', 'potential-area', selectPotential);
@@ -391,6 +426,11 @@ export default function App() {
     return center ? { lat: center.lat, lon: center.lng } : position;
   }
 
+  function closeSheet() {
+    if (sheet === 'data') setSelectedId(null);
+    setSheet(null);
+  }
+
   function openObservation(location = pickedLocation ?? currentMapCenter(), source: Observation['source'] = pickedLocation ? 'map' : 'gps') {
     setDraft({ outcome: 'found', count: 1, durationMinutes: 60, observedAt: new Date(), location, source });
     setSheet('observation');
@@ -505,12 +545,12 @@ export default function App() {
       <header className="top-stack">
         <div className="brand-row glass">
           <div className="brand"><span className="brand-mark">🍄</span><span>MycoMap</span></div>
-          <button className="icon-button" onClick={() => setTheme(nextTheme(theme))} aria-label="Changer le thème">{themeIcon(theme)}</button>
+          <button className="icon-button" onClick={() => setTheme(nextTheme(theme))} aria-label={`Thème ${theme} : changer le thème`}>{themeIcon(theme)}</button>
         </div>
         <div className="species-control glass" role="tablist" aria-label="Champignon recherché">
           {(Object.keys(SPECIES) as Species[]).map((key) => (
             <button key={key} className={species === key ? 'active' : ''} onClick={() => { setSpecies(key); setSelectedId(null); }} role="tab">
-              <span>{SPECIES[key].emoji}</span>{SPECIES[key].label}
+              <SpeciesIcon species={key} />{SPECIES[key].label}
             </button>
           ))}
         </div>
@@ -531,9 +571,9 @@ export default function App() {
         </div>
       )}
 
-      {selected && (
-        <section className="zone-card glass">
-          <button className="close-mini" onClick={() => setSelectedId(null)}><X size={16} /></button>
+      {selected && !sheet && (
+        <section className="zone-card glass" onClick={() => setSheet('data')} role="button" aria-label="Ouvrir le détail de cette parcelle">
+          <button className="close-mini" onClick={(event) => { event.stopPropagation(); setSelectedId(null); }}><X size={16} /></button>
           <div className="zone-score" style={{ color: scoreColor(selected.finalScore) }}>{selected.finalScore}</div>
           <div className="zone-copy"><b>{scoreLabel(selected.finalScore)}</b><span>{selected.name}</span><small>{selected.reasons.join(' · ')}</small></div>
         </section>
@@ -550,14 +590,14 @@ export default function App() {
         <button onClick={() => setSheet('data')}><Layers3 size={21} /><span>Données</span></button>
       </nav>
 
-      {sheet && <div className="scrim" onClick={() => setSheet(null)} />}
+      {sheet && <div className="scrim" onClick={closeSheet} />}
 
       {sheet === 'observation' && (
         <section className="sheet" aria-modal="true">
           <div className="grabber" />
-          <div className="sheet-title"><div><small>{SPECIES[species].label}</small><h2>Enregistrer la sortie</h2></div><button className="icon-button" onClick={() => setSheet(null)}><X size={20} /></button></div>
+          <div className="sheet-title"><div><small>{SPECIES[species].label}</small><h2>Enregistrer la sortie</h2></div><button className="icon-button" onClick={closeSheet}><X size={20} /></button></div>
           <div className="toggle-row">
-            <button className={draft.outcome === 'found' ? 'selected good' : ''} onClick={() => setDraft((d) => ({ ...d, outcome: 'found' }))}>🍄 Trouvé</button>
+            <button className={draft.outcome === 'found' ? 'selected good' : ''} onClick={() => setDraft((d) => ({ ...d, outcome: 'found' }))}><SpeciesIcon species={species} size={21} /> Trouvé</button>
             <button className={draft.outcome === 'none' ? 'selected neutral' : ''} onClick={() => setDraft((d) => ({ ...d, outcome: 'none' }))}>○ Rien trouvé</button>
           </div>
           {draft.outcome === 'found' && <label className="field"><span>Quantité</span><input type="number" inputMode="numeric" min="1" max="999" value={draft.count} onChange={(e) => setDraft((d) => ({ ...d, count: Number(e.target.value) }))} /></label>}
@@ -573,12 +613,12 @@ export default function App() {
       {sheet === 'spots' && (
         <section className="sheet sheet-list" aria-modal="true">
           <div className="grabber" />
-          <div className="sheet-title"><div><small>Privé sur cet appareil</small><h2>Mes coins & sorties</h2></div><button className="icon-button" onClick={() => setSheet(null)}><X size={20} /></button></div>
+          <div className="sheet-title"><div><small>Privé sur cet appareil</small><h2>Mes coins & sorties</h2></div><button className="icon-button" onClick={closeSheet}><X size={20} /></button></div>
           <div className="observations-list">
             {observations.length === 0 && <div className="empty">Aucune sortie enregistrée pour l’instant.</div>}
             {observations.map((obs) => (
               <article className="observation" key={obs.id} onClick={() => { mapRef.current?.flyTo({ center: [obs.lon, obs.lat], zoom: 14 }); setSheet(null); }}>
-                <div className={`result-icon ${obs.outcome}`}>{obs.outcome === 'found' ? '🍄' : '○'}</div>
+                <div className={`result-icon ${obs.outcome}`}>{obs.outcome === 'found' ? <SpeciesIcon species={obs.species} size={26} /> : '○'}</div>
                 <div><b>{SPECIES[obs.species].label} · {obs.outcome === 'found' ? `${obs.count} trouvé${obs.count > 1 ? 's' : ''}` : 'rien trouvé'}</b><span>{new Date(obs.observedAt).toLocaleDateString('fr-FR')} · {obs.durationMinutes} min · météo {obs.conditionScore ?? '—'}/100{obs.pendingEnrichment ? ' · à compléter' : ''}</span>{obs.photoStored && <small>Photo conservée hors ligne</small>}{obs.habitatLabel && <small>{obs.habitatLabel}</small>}</div>
                 <button className="delete" onClick={(e) => { e.stopPropagation(); deleteObservation(obs.id); }}><Trash2 size={17} /></button>
               </article>
@@ -590,7 +630,7 @@ export default function App() {
       {sheet === 'data' && (
         <section className="sheet sheet-data" aria-modal="true">
           <div className="grabber" />
-          <div className="sheet-title"><div><small>{selected ? 'Parcelle sélectionnée' : 'Parcelle la plus proche du centre'}{cacheLabel ? ` · maj ${cacheLabel}` : ''}</small><h2>Données de la zone</h2></div><button className="icon-button" onClick={() => setSheet(null)}><X size={20} /></button></div>
+          <div className="sheet-title"><div><small>{selected ? 'Parcelle sélectionnée' : 'Parcelle la plus proche du centre'}{cacheLabel ? ` · maj ${cacheLabel}` : ''}</small><h2>Données de la zone</h2></div><button className="icon-button" onClick={closeSheet}><X size={20} /></button></div>
           {!dataTarget || !weather ? (
             <div className="empty">{loading ? 'Analyse de la zone en cours…' : !isOnline ? 'Zone non disponible dans le cache hors ligne.' : 'Aucune parcelle analysée disponible ici pour le moment.'}</div>
           ) : (
