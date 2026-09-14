@@ -66,8 +66,20 @@ button { color: inherit; border: 0; cursor: pointer; touch-action: manipulation;
 
 .map { position: absolute; inset: 0; }
 .maplibregl-canvas { outline: none; }
-.maplibregl-ctrl-top-left { top: calc(env(safe-area-inset-top) + 168px); left: 8px; }
-.maplibregl-ctrl-attrib.maplibregl-compact { background: var(--surface); border-radius: 9px; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.map-credit {
+  position: absolute;
+  z-index: 5;
+  left: 8px;
+  bottom: calc(92px + env(safe-area-inset-bottom));
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: rgba(255,255,255,.66);
+  color: rgba(20,30,24,.72);
+  font-size: 8px;
+  font-weight: 700;
+  pointer-events: none;
+}
+:root[data-theme="dark"] .map-credit { background: rgba(20,28,23,.68); color: rgba(245,248,245,.68); }
 
 .glass {
   background: var(--surface);
@@ -276,6 +288,7 @@ button { color: inherit; border: 0; cursor: pointer; touch-action: manipulation;
   overscroll-behavior: contain;
   animation: sheetUp .22s ease-out;
 }
+.sheet-data { max-height: min(86dvh, 790px); }
 @keyframes sheetUp { from { transform: translateY(22px); opacity: .4; } }
 .grabber { width: 36px; height: 5px; border-radius: 99px; background: var(--border); margin: 0 auto 8px; }
 .sheet-title { min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -315,13 +328,64 @@ button { color: inherit; border: 0; cursor: pointer; touch-action: manipulation;
 .delete { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; background: transparent; color: var(--muted); }
 .empty { padding: 24px; text-align: center; color: var(--muted); font-size: 12px; }
 
-.data-grid { display: grid; gap: 8px; margin-top: 7px; }
-.data-item { padding: 11px 12px; border-radius: 15px; border: 1px solid var(--border); background: var(--button); display: grid; gap: 3px; }
-.data-item b { font-size: 12px; }
-.data-item span { color: var(--muted); font-size: 10px; line-height: 1.4; }
-.data-item.ok { border-left: 4px solid #43a867; }
-.data-item.pending { border-left: 4px solid #f0c52e; }
-.data-item.private { border-left: 4px solid #7d63d8; }
+.data-summary {
+  display: grid;
+  grid-template-columns: 62px 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  margin: 5px 0 9px;
+  border-radius: 17px;
+  background: var(--button);
+  border: 1px solid var(--border);
+}
+.data-total { font-size: 37px; font-weight: 900; text-align: center; letter-spacing: -.06em; }
+.data-summary > div:last-child { min-width: 0; display: grid; gap: 2px; }
+.data-summary b { font-size: 13px; }
+.data-summary span { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.data-summary small { color: var(--muted); font-size: 9px; }
+
+.score-strip {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 5px;
+  margin-bottom: 9px;
+}
+.score-strip > div {
+  min-width: 0;
+  padding: 8px 3px;
+  border-radius: 12px;
+  background: var(--button);
+  border: 1px solid var(--border);
+  text-align: center;
+  display: grid;
+  gap: 2px;
+}
+.score-strip b { font-size: 14px; }
+.score-strip span { font-size: 8px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.data-section {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 15px;
+  border: 1px solid var(--border);
+  background: var(--button);
+}
+.data-section h3 { margin: 0 0 5px; font-size: 12px; letter-spacing: -.01em; }
+.metric-row {
+  min-height: 28px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+}
+.metric-row:first-of-type { border-top: 0; }
+.metric-row span { color: var(--muted); font-size: 10px; }
+.metric-row b { font-size: 10px; text-align: right; overflow-wrap: anywhere; }
+.data-unavailable { padding: 8px 0 2px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.data-note, .data-credits { margin: 9px 4px 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.data-credits { margin-top: 5px; opacity: .8; }
 
 @media (min-width: 760px) {
   .top-stack { width: 430px; right: auto; }
@@ -338,4 +402,5 @@ button { color: inherit; border: 0; cursor: pointer; touch-action: manipulation;
   .bottom-nav { height: 68px; }
   .bottom-nav > button { height: 52px; }
   .status-pill, .zone-card, .add-here { bottom: calc(88px + env(safe-area-inset-bottom)); }
+  .map-credit { bottom: calc(82px + env(safe-area-inset-bottom)); }
 }
