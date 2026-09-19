@@ -588,10 +588,26 @@ export default function App() {
     const selectPotential = (event: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
       const id = event.features?.[0]?.properties?.id;
       if (!id) return;
-      setSelectedId(String(id));
+      const zoneId = String(id);
+      setSelectedId(zoneId);
+      setSelectedFavoriteId((current) => {
+        if (!current) return null;
+        const favorite = favoritesRef.current.find((item) => item.id === current);
+        return favorite?.zone.id === zoneId ? current : null;
+      });
       setPickedLocation(null);
       setSheet(null);
     };
+    const selectFavoriteOnMap = (event: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
+      const id = event.features?.[0]?.properties?.favoriteId;
+      if (!id) return;
+      const favorite = favoritesRef.current.find((item) => item.id === String(id));
+      if (!favorite) return;
+      setSelectedFavoriteId(favorite.id);
+      void focusFavorite(favorite);
+    };
+    map.on('click', 'favorite-point', selectFavoriteOnMap);
+    map.on('click', 'favorite-area', selectFavoriteOnMap);
     map.on('click', 'potential-point', selectPotential);
     map.on('click', 'potential-area', selectPotential);
     map.on('movestart', (event) => {
@@ -599,11 +615,16 @@ export default function App() {
     });
     map.on('mouseenter', 'potential-area', () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', 'potential-area', () => { map.getCanvas().style.cursor = ''; });
+    map.on('mouseenter', 'favorite-point', () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', 'favorite-point', () => { map.getCanvas().style.cursor = ''; });
+    map.on('mouseenter', 'favorite-area', () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', 'favorite-area', () => { map.getCanvas().style.cursor = ''; });
     map.on('click', (event) => {
-      const availableLayers = ['potential-point', 'potential-area'].filter((id) => map.getLayer(id));
+      const availableLayers = ['favorite-point', 'favorite-area', 'potential-point', 'potential-area'].filter((id) => map.getLayer(id));
       const hit = availableLayers.length ? map.queryRenderedFeatures(event.point, { layers: availableLayers }) : [];
       if (hit.length) return;
       setSelectedId(null);
+      setSelectedFavoriteId(null);
       setPickedLocation({ lat: event.lngLat.lat, lon: event.lngLat.lng });
     });
 
@@ -622,6 +643,38 @@ export default function App() {
     polygonSource?.setData(polygonGeojson(displayPotentials) as any);
     pointSource?.setData(pointGeojson(displayPotentials));
   }, [displayPotentials, mapReady]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    (mapRef.current?.getSource('favorite-polygons') as GeoJSONSource | undefined)?.setData(favoritePolygonsGeojson(favorites) as any);
+    (mapRef.current?.getSource('favorite-points') as GeoJSONSource | undefined)?.setData(favoritePointsGeojson(favorites));
+  }, [favorites, mapReady]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    (mapRef.current?.getSource('selected-favorite-polygon') as GeoJSONSource | undefined)?.setData(selectedFavoritePolygonGeojson(selectedFavorite) as any);
+    (mapRef.current?.getSource('selected-favorite-point') as GeoJSONSource | undefined)?.setData(pointGeojson(selectedFavorite ? [selectedFavorite] : []));
+  }, [selectedFavorite, mapReady]);
+
+  useEffect(() => {
+    if (!zones.length) return;
+    setFavorites((current) => {
+      let changed = false;
+      const next = current.map((favorite) => {
+        if (favorite.zone.geometry) return favorite;
+        const zone = zones.find((candidate) => candidate.id === favorite.zone.id);
+        if (!zone?.geometry) return favorite;
+        changed = true;
+        return {
+          ...favorite,
+          lat: zone.lat,
+          lon: zone.lon,
+          zone: { ...zone }
+        };
+      });
+      return changed ? next : current;
+    });
+  }, [zones]);
 
   useEffect(() => {
     if (!mapReady) return;
