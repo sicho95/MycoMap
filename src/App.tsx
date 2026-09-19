@@ -709,9 +709,12 @@ export default function App() {
     const nearest = zones
       .map((zone) => ({ zone, d: distanceMeters(zone, draft.location!) }))
       .sort((a, b) => a.d - b.d)[0]?.zone;
-    const conditionScore = snapshot
-      ? scoreMoment(species, snapshot, nearest, draft.observedAt)
-      : undefined;
+    const scoreAtObservation = snapshot && nearest
+      ? scoreZone(species, nearest, snapshot, observationsRef.current)
+      : null;
+    const conditionScore = scoreAtObservation?.conditionScore ?? (
+      snapshot ? scoreMoment(species, snapshot, nearest, draft.observedAt) : undefined
+    );
     const photoStored = draft.photoFile ? await storeObservationPhoto(id, draft.photoFile) : false;
 
     const item: Observation = {
@@ -729,7 +732,20 @@ export default function App() {
       pendingEnrichment,
       weather: snapshot,
       conditionScore,
-      habitatLabel: nearest?.name
+      habitatLabel: nearest?.name,
+      modelSnapshot: scoreAtObservation ? {
+        finalScore: scoreAtObservation.finalScore,
+        habitatScore: scoreAtObservation.habitatScore,
+        forestScore: scoreAtObservation.forestScore,
+        soilScore: scoreAtObservation.soilScore,
+        terrainScore: scoreAtObservation.terrainScore,
+        seasonScore: scoreAtObservation.seasonScore,
+        conditionScore: scoreAtObservation.conditionScore,
+        hydricScore: scoreAtObservation.hydricScore,
+        hydricRelativeWaterPct: scoreAtObservation.hydricRelativeWaterPct,
+        hydricLabel: scoreAtObservation.hydricLabel,
+        capturedAt: new Date().toISOString()
+      } : undefined
     };
 
     setObservations((current) => [item, ...current]);
@@ -756,9 +772,25 @@ export default function App() {
         const nearest = zones
           .map((zone) => ({ zone, d: distanceMeters(zone, item) }))
           .sort((a, b) => a.d - b.d)[0]?.zone;
+        const scoreAtObservation = nearest
+          ? scoreZone(item.species, nearest, snapshot, observationsRef.current.filter((obs) => obs.id !== item.id))
+          : null;
         updates.set(item.id, {
           weather: snapshot,
-          conditionScore: scoreMoment(item.species, snapshot, nearest, date),
+          conditionScore: scoreAtObservation?.conditionScore ?? scoreMoment(item.species, snapshot, nearest, date),
+          modelSnapshot: scoreAtObservation ? {
+            finalScore: scoreAtObservation.finalScore,
+            habitatScore: scoreAtObservation.habitatScore,
+            forestScore: scoreAtObservation.forestScore,
+            soilScore: scoreAtObservation.soilScore,
+            terrainScore: scoreAtObservation.terrainScore,
+            seasonScore: scoreAtObservation.seasonScore,
+            conditionScore: scoreAtObservation.conditionScore,
+            hydricScore: scoreAtObservation.hydricScore,
+            hydricRelativeWaterPct: scoreAtObservation.hydricRelativeWaterPct,
+            hydricLabel: scoreAtObservation.hydricLabel,
+            capturedAt: new Date().toISOString()
+          } : item.modelSnapshot,
           pendingEnrichment: false
         });
       } catch {
@@ -908,7 +940,7 @@ export default function App() {
             {observations.map((obs) => (
               <article className="observation" key={obs.id} onClick={() => { mapRef.current?.flyTo({ center: [obs.lon, obs.lat], zoom: 14 }); setSheet(null); }}>
                 <div className={`result-icon ${obs.outcome}`}>{obs.outcome === 'found' ? <SpeciesIcon species={obs.species} size={26} /> : '○'}</div>
-                <div><b>{SPECIES[obs.species].label} · {obs.outcome === 'found' ? `${obs.count} trouvé${obs.count > 1 ? 's' : ''}` : 'rien trouvé'}</b><span>{new Date(obs.observedAt).toLocaleDateString('fr-FR')} · {obs.durationMinutes} min · météo {obs.conditionScore ?? '—'}/100{obs.pendingEnrichment ? ' · à compléter' : ''}</span>{obs.photoStored && <small>Photo conservée hors ligne</small>}{obs.habitatLabel && <small>{obs.habitatLabel}</small>}</div>
+                <div><b>{SPECIES[obs.species].label} · {obs.outcome === 'found' ? `${obs.count} trouvé${obs.count > 1 ? 's' : ''}` : 'rien trouvé'}</b><span>{new Date(obs.observedAt).toLocaleDateString('fr-FR')} · {obs.durationMinutes} min · score au moment {obs.modelSnapshot?.finalScore ?? '—'}/100{obs.pendingEnrichment ? ' · à compléter' : ''}</span>{obs.modelSnapshot && <small>Habitat {obs.modelSnapshot.habitatScore}/100 · hydrique {obs.modelSnapshot.hydricScore}/100 · moment {obs.modelSnapshot.conditionScore}/100</small>}{obs.photoStored && <small>Photo conservée hors ligne</small>}{obs.habitatLabel && <small>{obs.habitatLabel}</small>}</div>
                 <button className="delete" onClick={(e) => { e.stopPropagation(); deleteObservation(obs.id); }}><Trash2 size={17} /></button>
               </article>
             ))}
