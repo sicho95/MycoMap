@@ -648,7 +648,7 @@ export default function App() {
     setSheet(null);
   }
 
-  function openObservation(location = pickedLocation ?? currentMapCenter(), source: Observation['source'] = pickedLocation ? 'map' : 'gps') {
+  function openObservation(location = pickedLocation ?? gpsFix ?? currentMapCenter(), source: Observation['source'] = pickedLocation ? 'map' : 'gps') {
     setDraft({ outcome: 'found', count: 1, durationMinutes: 60, observedAt: new Date(), location, source });
     setSheet('observation');
   }
