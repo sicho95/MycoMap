@@ -794,7 +794,8 @@ export default function App() {
       return;
     }
 
-    const staticFresh = !force && !!cached && cachedDistance <= STATIC_REVALIDATE_DISTANCE_METERS && isFresh(cached.staticUpdatedAt, STATIC_CACHE_MAX_AGE_MS);
+    const cacheHasDetailedMicroclimate = !!cached?.zones?.some((zone) => zone.microclimate?.detailVersion === 1);
+    const staticFresh = !force && !!cached && cacheHasDetailedMicroclimate && cachedDistance <= STATIC_REVALIDATE_DISTANCE_METERS && isFresh(cached.staticUpdatedAt, STATIC_CACHE_MAX_AGE_MS);
     const reusableWeather = areaWeatherIsLocal ? cached?.weather ?? null : localWeatherCache?.snapshot ?? null;
     const reusableWeatherUpdatedAt = areaWeatherIsLocal ? cached?.weatherUpdatedAt ?? null : localWeatherCache?.updatedAt ?? null;
     const weatherFresh = !force && !!reusableWeather && isFresh(reusableWeatherUpdatedAt, WEATHER_CACHE_MAX_AGE_MS);
@@ -1063,8 +1064,14 @@ export default function App() {
 
     for (const item of original) {
       try {
+        let favoriteZone = item.zone;
+        if (favoriteZone.microclimate?.detailVersion !== 1) {
+          const resolvedZone = await fetchForestZoneAtPoint({ lat: item.lat, lon: item.lon });
+          if (resolvedZone) favoriteZone = resolvedZone;
+        }
+
         const snapshot = await fetchCurrentWeather(item.lat, item.lon);
-        const scored = scoreZone(item.species, item.zone, snapshot, observationsRef.current);
+        const scored = scoreZone(item.species, favoriteZone, snapshot, observationsRef.current);
         const currentLevel = scored.finalScore >= DISPLAY_MIN_SCORE
           ? Math.floor(scored.finalScore / 5) * 5
           : null;
@@ -1087,6 +1094,9 @@ export default function App() {
 
         const updated: FavoriteSpot = {
           ...item,
+          zone: favoriteZone,
+          lat: favoriteZone.lat,
+          lon: favoriteZone.lon,
           lastScore: scored.finalScore,
           lastHabitatScore: scored.habitatScore,
           lastConditionScore: scored.conditionScore,
