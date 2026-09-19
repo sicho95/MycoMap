@@ -1,5 +1,5 @@
 import { fromArrayBuffer } from 'geotiff';
-import type { ForestZone, SoilProfile, SoilTextureClass, DrainageClass } from './domain';
+import type { ForestZone, LatLng, SoilProfile, SoilTextureClass, DrainageClass } from './domain';
 
 const SOILGRIDS_WCS = 'https://maps.isric.org/mapserv';
 const DEPTH = '0-5cm';
