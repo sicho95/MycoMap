@@ -39,12 +39,15 @@ export function scoreSeason(species: Species, at: Date) {
 
 function conditionCepes(weather: WeatherSnapshot, at: Date) {
   const season = scoreSeason('cepes', at);
-  const rainSeason = rising(weather.rain30, 3, 95);
-  const rainLag = rising(weather.rain26 ?? weather.rain30, 3, 85);
-  const moisture = bell(weather.soilMoisture, 0.06, 0.17, 0.40, 0.60);
+  const rain30 = rising(weather.rain30, 4, 90);
+  const rain14 = rising(weather.rain14, 1.5, 28);
+  const rain7 = rising(weather.rain7, 0.5, 14);
+  const moisture = bell(weather.soilMoisture, 0.06, 0.18, 0.40, 0.60);
   const temp20 = bell(weather.airTemp20 ?? weather.airTemp7 ?? weather.soilTemp, 3, 9, 17, 23);
-  const waterSignal = rainSeason * 0.42 + rainLag * 0.23 + moisture * 0.35;
-  const meteo = waterSignal * 0.78 + temp20 * 0.22;
+
+  // La pluie ancienne ne peut plus masquer deux semaines très sèches.
+  const waterSignal = rain30 * 0.20 + rain14 * 0.32 + rain7 * 0.20 + moisture * 0.28;
+  const meteo = waterSignal * 0.84 + temp20 * 0.16;
   const gate = seasonGate(season, 0.14, 0.90);
   return Math.round(clamp(meteo * gate));
 }
@@ -79,6 +82,84 @@ export function scoreConditions(species: Species, weather: WeatherSnapshot, at =
   if (species === 'cepes') return conditionCepes(weather, at);
   if (species === 'girolles') return conditionGirolles(weather, at);
   return conditionMorilles(weather, at);
+}
+
+export function assessHydricState(species: Species, zone: ForestZone, weather: WeatherSnapshot) {
+  const currentPct = weather.soilMoisture == null ? null : weather.soilMoisture * 100;
+  const fieldCapacity = zone.soil?.fieldCapacityPct ?? null;
+  const wiltingPoint = zone.soil?.wiltingPointPct ?? null;
+  const availableWater = zone.soil?.availableWaterPct ?? null;
+
+  let relativeWaterPct: number | null = null;
+  if (
+    currentPct != null &&
+    fieldCapacity != null &&
+    wiltingPoint != null &&
+    availableWater != null &&
+    availableWater >= 3 &&
+    fieldCapacity > wiltingPoint
+  ) {
+    relativeWaterPct = clamp(((currentPct - wiltingPoint) / availableWater) * 100);
+  }
+
+  const recent14 = rising(weather.rain14, 1.5, species === 'morilles' ? 18 : 26);
+  const recent7 = rising(weather.rain7, 0.4, species === 'morilles' ? 10 : 14);
+  const recentRain = recent14 * 0.68 + recent7 * 0.32;
+
+  let waterAvailabilityScore: number;
+  let confidence: 'soil-relative' | 'weather-only';
+
+  if (relativeWaterPct != null) {
+    confidence = 'soil-relative';
+    const r = relativeWaterPct / 100;
+    if (r <= 0.10) waterAvailabilityScore = 4;
+    else if (r <= 0.25) waterAvailabilityScore = 4 + ((r - 0.10) / 0.15) * 21;
+    else if (r <= 0.45) waterAvailabilityScore = 25 + ((r - 0.25) / 0.20) * 40;
+    else if (r <= 0.70) waterAvailabilityScore = 65 + ((r - 0.45) / 0.25) * 35;
+    else waterAvailabilityScore = 100;
+
+    waterAvailabilityScore = waterAvailabilityScore * 0.78 + recentRain * 0.22;
+    if (relativeWaterPct < 35 && weather.rain14 < 3) waterAvailabilityScore *= 0.72;
+  } else {
+    confidence = 'weather-only';
+    const rawMoisture = weather.soilMoisture == null
+      ? 55
+      : bell(weather.soilMoisture, 0.05, 0.20, 0.42, 0.62);
+    waterAvailabilityScore = rawMoisture * 0.42 + recentRain * 0.58;
+  }
+
+  const score = Math.round(clamp(waterAvailabilityScore));
+  const label = score < 18
+    ? 'très sec'
+    : score < 38
+      ? 'sec'
+      : score < 58
+        ? 'limite'
+        : score < 78
+          ? 'frais'
+          : 'humide';
+
+  const floor = confidence === 'soil-relative'
+    ? (species === 'morilles' ? 0.14 : species === 'girolles' ? 0.09 : 0.08)
+    : 0.42;
+  const power = species === 'cepes' ? 1.20 : species === 'girolles' ? 1.12 : 1.0;
+  const gate = floor + (1 - floor) * Math.pow(score / 100, power);
+
+  return {
+    score,
+    relativeWaterPct: relativeWaterPct == null ? null : Math.round(relativeWaterPct),
+    label,
+    gate,
+    confidence,
+    currentPct
+  };
+}
+
+export function scoreMoment(species: Species, weather: WeatherSnapshot, zone?: ForestZone, at = new Date(weather.date)) {
+  const base = scoreConditions(species, weather, at);
+  if (!zone) return base;
+  const hydric = assessHydricState(species, zone, weather);
+  return Math.round(clamp(base * hydric.gate));
 }
 
 function tagsText(zone: ForestZone) {
@@ -312,10 +393,11 @@ export function scoreZone(species: Species, zone: ForestZone, weather: WeatherSn
   const habitat = scoreHabitat(species, zone);
   const at = new Date(weather.date);
   const seasonScore = scoreSeason(species, at);
-  const conditionScore = scoreConditions(species, weather, at);
+  const hydric = assessHydricState(species, zone, weather);
+  const conditionScore = scoreMoment(species, weather, zone, at);
   const correction = personalCorrection(species, zone, observations);
 
-  const availabilityFactor = 0.10 + 0.90 * (conditionScore / 100);
+  const availabilityFactor = 0.08 + 0.92 * (conditionScore / 100);
   const finalScore = Math.round(clamp(habitat.habitatScore * availabilityFactor + correction));
   const terrain = zone.elevation == null
     ? 'Relief IGN indisponible'
@@ -326,6 +408,9 @@ export function scoreZone(species: Species, zone: ForestZone, weather: WeatherSn
     ...habitat,
     seasonScore,
     conditionScore,
+    hydricScore: hydric.score,
+    hydricRelativeWaterPct: hydric.relativeWaterPct,
+    hydricLabel: hydric.label,
     personalCorrection: correction,
     finalScore,
     reasons: [
@@ -335,6 +420,8 @@ export function scoreZone(species: Species, zone: ForestZone, weather: WeatherSn
       soilReason(zone),
       `Terrain ${habitat.terrainScore}/100`,
       `Saison ${seasonScore}/100`,
+      `Hydrique ${hydric.score}/100 · ${hydric.label}`,
+      hydric.relativeWaterPct == null ? 'Eau utile relative non calculable' : `Eau utile disponible ${hydric.relativeWaterPct}%`,
       `Moment ${conditionScore}/100`,
       phenologyReason(species, weather),
       correction === 0 ? 'Historique neutre' : `Historique ${correction > 0 ? '+' : ''}${correction}`,
