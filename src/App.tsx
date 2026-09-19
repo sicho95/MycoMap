@@ -23,6 +23,7 @@ import {
   deleteObservationPhoto,
   formatCacheAge,
   getCachedArea,
+  getCachedWeather,
   isFresh,
   putCachedArea,
   requestPersistentStorage,
@@ -38,6 +39,7 @@ const IGN_PLAN_TILE = 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&V
 const VIEWPORT_RELOAD_DISTANCE_METERS = 4500;
 const AREA_RADIUS_METERS = 25000;
 const DISPLAY_MIN_SCORE = 50;
+const WEATHER_REUSE_DISTANCE_METERS = 3500;
 
 type Sheet = 'observation' | 'spots' | 'data' | null;
 
@@ -470,17 +472,31 @@ export default function App() {
 
     const cached = await getCachedArea(target);
     if (requestId !== loadRequestRef.current) return;
+
+    const cachedDistance = cached ? distanceMeters(cached.center, target) : Number.POSITIVE_INFINITY;
+    const areaWeatherIsLocal = cachedDistance <= WEATHER_REUSE_DISTANCE_METERS;
+    let localWeatherCache = null as Awaited<ReturnType<typeof getCachedWeather>>;
+
     if (cached) {
       setZones(cached.zones);
-      if (cached.weather) setWeather(cached.weather);
-      setCacheUpdatedAt(Math.max(cached.staticUpdatedAt, cached.weatherUpdatedAt ?? 0));
+      if (cached.weather && areaWeatherIsLocal) setWeather(cached.weather);
+      setCacheUpdatedAt(Math.max(cached.staticUpdatedAt, areaWeatherIsLocal ? cached.weatherUpdatedAt ?? 0 : 0));
+    }
+
+    if (!areaWeatherIsLocal) {
+      localWeatherCache = await getCachedWeather(target.lat, target.lon, new Date());
+      if (requestId !== loadRequestRef.current) return;
+      if (localWeatherCache) {
+        setWeather(localWeatherCache.snapshot);
+        setCacheUpdatedAt((current) => Math.max(current ?? 0, localWeatherCache?.updatedAt ?? 0));
+      }
     }
 
     if (!navigator.onLine) {
       setIsOnline(false);
       if (!cached) {
         setZones([]);
-        setWeather(null);
+        if (!localWeatherCache) setWeather(null);
         setNotice('Hors ligne : cette zone n’est pas encore en cache. Tu peux quand même enregistrer une sortie ou une photo.');
       }
       if (requestId === loadRequestRef.current) setLoading(false);
@@ -488,7 +504,9 @@ export default function App() {
     }
 
     const staticFresh = !force && !!cached && isFresh(cached.staticUpdatedAt, STATIC_CACHE_MAX_AGE_MS);
-    const weatherFresh = !force && !!cached?.weather && isFresh(cached.weatherUpdatedAt, WEATHER_CACHE_MAX_AGE_MS);
+    const reusableWeather = areaWeatherIsLocal ? cached?.weather ?? null : localWeatherCache?.snapshot ?? null;
+    const reusableWeatherUpdatedAt = areaWeatherIsLocal ? cached?.weatherUpdatedAt ?? null : localWeatherCache?.updatedAt ?? null;
+    const weatherFresh = !force && !!reusableWeather && isFresh(reusableWeatherUpdatedAt, WEATHER_CACHE_MAX_AGE_MS);
     if (staticFresh && weatherFresh) {
       if (requestId === loadRequestRef.current) setLoading(false);
       return;
@@ -496,7 +514,7 @@ export default function App() {
 
     const [zoneResult, weatherResult] = await Promise.allSettled([
       staticFresh && cached ? Promise.resolve(cached.zones) : fetchForestZones(target, AREA_RADIUS_METERS),
-      weatherFresh && cached?.weather ? Promise.resolve(cached.weather) : fetchCurrentWeather(target.lat, target.lon, force)
+      weatherFresh && reusableWeather ? Promise.resolve(reusableWeather) : fetchCurrentWeather(target.lat, target.lon, force)
     ]);
 
     if (requestId !== loadRequestRef.current) return;
@@ -510,7 +528,7 @@ export default function App() {
     if (nextZones.length && nextWeather) {
       const now = Date.now();
       const staticUpdatedAt = staticFresh && cached ? cached.staticUpdatedAt : zoneResult.status === 'fulfilled' ? now : cached?.staticUpdatedAt ?? now;
-      const weatherUpdatedAt = weatherFresh && cached ? cached.weatherUpdatedAt : weatherResult.status === 'fulfilled' ? now : cached?.weatherUpdatedAt ?? now;
+      const weatherUpdatedAt = weatherFresh ? reusableWeatherUpdatedAt : weatherResult.status === 'fulfilled' ? now : reusableWeatherUpdatedAt ?? cached?.weatherUpdatedAt ?? now;
       await putCachedArea({
         center: target,
         radiusMeters: AREA_RADIUS_METERS,
