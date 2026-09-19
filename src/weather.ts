@@ -53,7 +53,8 @@ function normalizeWeather(data: any, at: Date): WeatherSnapshot {
     airTemp20: avg(trailingTemp(20)),
     gdd84Base5: Number.isFinite(gdd84) ? gdd84 : null,
     soilTemp: data.hourly?.soil_temperature_6cm?.[hourIdx] ?? data.hourly?.soil_temperature_7_to_28cm?.[hourIdx] ?? null,
-    soilMoisture: data.hourly?.soil_moisture_3_to_9cm?.[hourIdx] ?? data.hourly?.soil_moisture_0_to_7cm?.[hourIdx] ?? null
+    soilMoisture: data.hourly?.soil_moisture_3_to_9cm?.[hourIdx] ?? data.hourly?.soil_moisture_0_to_7cm?.[hourIdx] ?? null,
+    elevation: typeof data.elevation === 'number' && Number.isFinite(data.elevation) ? data.elevation : null
   };
 }
 
