@@ -332,6 +332,9 @@ export default function App() {
   const [pickedLocation, setPickedLocation] = useState<LatLng | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedFavoriteId, setSelectedFavoriteId] = useState<string | null>(null);
+  const [favoriteDataTarget, setFavoriteDataTarget] = useState<PotentialPoint | null>(null);
+  const [favoriteDataWeather, setFavoriteDataWeather] = useState<WeatherSnapshot | null>(null);
+  const [favoriteDataLoading, setFavoriteDataLoading] = useState(false);
   const [selectorDataTarget, setSelectorDataTarget] = useState<PotentialPoint | null>(null);
   const [selectorWeather, setSelectorWeather] = useState<WeatherSnapshot | null>(null);
   const [selectorLookupLoading, setSelectorLookupLoading] = useState(false);
@@ -363,11 +366,21 @@ export default function App() {
     [displayPotentials, viewportBounds]
   );
 
-  const selected = useMemo(() => potentials.find((item) => item.id === selectedId) ?? null, [potentials, selectedId]);
   const selectedFavorite = useMemo(() => favorites.find((item) => item.id === selectedFavoriteId) ?? null, [favorites, selectedFavoriteId]);
-  const selectedDisplayScore = selected ? (mapMode === 'habitat' ? selected.habitatScore : selected.finalScore) : null;
+  const selected = useMemo(() => {
+    const live = potentials.find((item) => item.id === selectedId) ?? null;
+    if (live) return live;
+    if (selectedFavoriteId && favoriteDataTarget && favoriteDataTarget.id === selectedFavorite?.zone.id) return favoriteDataTarget;
+    return null;
+  }, [potentials, selectedId, selectedFavoriteId, selectedFavorite, favoriteDataTarget]);
+  const selectedDisplayScore = selected
+    ? (mapMode === 'habitat' ? selected.habitatScore : selected.finalScore)
+    : selectedFavorite
+      ? (mapMode === 'habitat' ? selectedFavorite.lastHabitatScore : selectedFavorite.lastScore)
+      : null;
 
   const dataTarget = useMemo(() => {
+    if (selectedFavoriteId && favoriteDataTarget) return favoriteDataTarget;
     if (selected) return selected;
 
     if (pickedLocation) {
@@ -380,13 +393,14 @@ export default function App() {
     return nearby.reduce((closest, candidate) =>
       distanceMeters(candidate, position) < distanceMeters(closest, position) ? candidate : closest
     );
-  }, [selected, pickedLocation, potentials, position, selectorDataTarget]);
+  }, [selectedFavoriteId, favoriteDataTarget, selected, pickedLocation, potentials, position, selectorDataTarget]);
 
   const dataWeather = useMemo(() => {
+    if (selectedFavoriteId) return favoriteDataWeather;
     if (!pickedLocation || selected) return weather;
     const containing = potentials.find((candidate) => pointInZoneGeometry(pickedLocation, candidate));
     return containing ? weather : selectorWeather;
-  }, [pickedLocation, selected, potentials, weather, selectorWeather]);
+  }, [selectedFavoriteId, favoriteDataWeather, pickedLocation, selected, potentials, weather, selectorWeather]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -682,6 +696,8 @@ export default function App() {
       if (hit.length) return;
       setSelectedId(null);
       setSelectedFavoriteId(null);
+      setFavoriteDataTarget(null);
+      setFavoriteDataWeather(null);
       setSelectorDataTarget(null);
       setSelectorWeather(null);
       setSelectorLookupDone(false);
@@ -961,6 +977,13 @@ export default function App() {
   async function openDataSheet() {
     setSheet('data');
 
+    if (selectedFavorite) {
+      if (!favoriteDataTarget || !favoriteDataWeather) {
+        await resolveFavoriteDetail(selectedFavorite);
+      }
+      return;
+    }
+
     if (selected || !pickedLocation) return;
 
     const exactKnown = potentials.find((candidate) => pointInZoneGeometry(pickedLocation, candidate));
@@ -1043,16 +1066,59 @@ export default function App() {
       : 'Coin ajouté aux favoris. La surveillance fonctionne à l’ouverture de MycoMap ; autorise les notifications pour recevoir l’alerte système.');
   }
 
+  async function resolveFavoriteDetail(item: FavoriteSpot) {
+    setFavoriteDataLoading(true);
+    try {
+      const [resolvedZone, snapshot] = await Promise.all([
+        fetchForestZoneAtPoint({ lat: item.lat, lon: item.lon }).catch(() => null),
+        fetchCurrentWeather(item.lat, item.lon)
+      ]);
+      const zone = resolvedZone ?? item.zone;
+      const scored = scoreZone(item.species, zone, snapshot, observationsRef.current);
+
+      setFavoriteDataTarget(scored);
+      setFavoriteDataWeather(snapshot);
+
+      setFavorites((current) => current.map((favorite) => favorite.id === item.id ? {
+        ...favorite,
+        zone,
+        lat: zone.lat,
+        lon: zone.lon,
+        lastScore: scored.finalScore,
+        lastHabitatScore: scored.habitatScore,
+        lastConditionScore: scored.conditionScore,
+        lastHydricScore: scored.hydricScore,
+        lastCheckedAt: new Date().toISOString()
+      } : favorite));
+
+      return scored;
+    } catch {
+      setNotice('Impossible d’actualiser ce favori pour le moment. Ses dernières données restent conservées.');
+      return null;
+    } finally {
+      setFavoriteDataLoading(false);
+    }
+  }
+
   async function focusFavorite(item: FavoriteSpot) {
     setSpecies(item.species);
     setMapMode('now');
     setSheet(null);
     setPickedLocation(null);
-    setSelectedFavoriteId(item.id);
-    mapRef.current?.flyTo({ center: [item.lon, item.lat], zoom: 13.2, duration: 700 });
-    await loadArea({ lat: item.lat, lon: item.lon }, false);
+    setSelectorDataTarget(null);
+    setSelectorWeather(null);
+    setSelectorLookupDone(false);
     setSelectedFavoriteId(item.id);
     setSelectedId(item.zone.id);
+    setFavoriteDataTarget(null);
+    setFavoriteDataWeather(null);
+
+    mapRef.current?.flyTo({ center: [item.lon, item.lat], zoom: 13.2, duration: 700 });
+
+    // Les données du favori et le chargement général de la carte sont indépendants :
+    // le détail reste accessible même si cette parcelle est sous le seuil de 50.
+    void resolveFavoriteDetail(item);
+    void loadArea({ lat: item.lat, lon: item.lon }, false);
   }
 
   async function refreshFavorites() {
@@ -1350,12 +1416,18 @@ export default function App() {
         </div>
       )}
 
-      {selected && !sheet && selectedDisplayScore != null && (
-        <section className="zone-card glass" onClick={() => setSheet('data')} role="button" aria-label="Ouvrir le détail de cette parcelle">
-          <button className="close-mini" onClick={(event) => { event.stopPropagation(); setSelectedId(null); setSelectedFavoriteId(null); }}><X size={16} /></button>
-          <button className={`favorite-mini${isFavorite(selected) ? ' active' : ''}`} onClick={(event) => { event.stopPropagation(); void toggleFavorite(selected); }} aria-label={isFavorite(selected) ? 'Retirer des favoris' : 'Surveiller ce coin'}><Star size={16} fill={isFavorite(selected) ? 'currentColor' : 'none'} /></button>
-          <div className="zone-score" style={{ color: selectedFavorite && mapMode === 'now' && selected.finalScore < DISPLAY_MIN_SCORE ? '#69736d' : scoreColor(selectedDisplayScore) }}>{selectedDisplayScore}</div>
-          <div className="zone-copy"><b>{mapMode === 'habitat' ? 'Qualité du coin' : scoreLabel(selected.finalScore)}</b><span>{selected.name}</span><small>Coin {selected.habitatScore}/100 · Maintenant {selected.finalScore}/100 · Moment {selected.conditionScore}/100</small></div>
+      {(selected || selectedFavorite) && !sheet && selectedDisplayScore != null && (
+        <section className="zone-card glass" onClick={() => void openDataSheet()} role="button" aria-label="Ouvrir le détail de cette parcelle">
+          <button className="close-mini" onClick={(event) => { event.stopPropagation(); setSelectedId(null); setSelectedFavoriteId(null); setFavoriteDataTarget(null); setFavoriteDataWeather(null); }}><X size={16} /></button>
+          {selected && (
+            <button className={`favorite-mini${isFavorite(selected) ? ' active' : ''}`} onClick={(event) => { event.stopPropagation(); void toggleFavorite(selected); }} aria-label={isFavorite(selected) ? 'Retirer des favoris' : 'Surveiller ce coin'}><Star size={16} fill={isFavorite(selected) ? 'currentColor' : 'none'} /></button>
+          )}
+          <div className="zone-score" style={{ color: mapMode === 'now' && (selected?.finalScore ?? selectedFavorite?.lastScore ?? 0) < DISPLAY_MIN_SCORE ? '#69736d' : scoreColor(selectedDisplayScore) }}>{selectedDisplayScore}</div>
+          <div className="zone-copy">
+            <b>{mapMode === 'habitat' ? 'Qualité du coin' : selected ? scoreLabel(selected.finalScore) : 'Favori surveillé'}</b>
+            <span>{selected?.name ?? selectedFavorite?.zone.name}</span>
+            <small>Coin {selected?.habitatScore ?? selectedFavorite?.lastHabitatScore ?? '—'}/100 · Maintenant {selected?.finalScore ?? selectedFavorite?.lastScore ?? '—'}/100 · Moment {selected?.conditionScore ?? selectedFavorite?.lastConditionScore ?? '—'}/100</small>
+          </div>
         </section>
       )}
 
@@ -1405,7 +1477,7 @@ export default function App() {
                 <article className="favorite-row" key={favorite.id} onClick={() => void focusFavorite(favorite)}>
                   <div className="favorite-score" style={{ color: favorite.lastScore == null || favorite.lastScore < DISPLAY_MIN_SCORE ? 'var(--muted)' : scoreColor(favorite.lastScore) }}>{favorite.lastScore ?? '—'}</div>
                   <div><b><SpeciesIcon species={favorite.species} size={17} /> {favorite.zone.name}</b><span>Coin {favorite.lastHabitatScore ?? '—'}/100 · maintenant {favorite.lastScore ?? '—'}/100 · moment {favorite.lastConditionScore ?? '—'}/100</span><small>Prochaine alerte : {favorite.lastAlertLevel == null ? '50' : favorite.lastAlertLevel + 5}/100 · {favorite.lastCheckedAt ? `vérifié ${new Date(favorite.lastCheckedAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}` : 'pas encore vérifié'}</small></div>
-                  <button className="delete favorite-delete" onClick={(event) => { event.stopPropagation(); setFavorites((current) => current.filter((item) => item.id !== favorite.id)); }} aria-label="Retirer des favoris"><Star size={17} fill="currentColor" /></button>
+                  <button className="delete favorite-delete" onClick={(event) => { event.stopPropagation(); setFavorites((current) => current.filter((item) => item.id !== favorite.id)); if (selectedFavoriteId === favorite.id) { setSelectedFavoriteId(null); setSelectedId(null); setFavoriteDataTarget(null); setFavoriteDataWeather(null); } }} aria-label="Supprimer ce favori"><Trash2 size={17} /></button>
                 </article>
               ))}
           </div>
@@ -1426,12 +1498,16 @@ export default function App() {
       {sheet === 'data' && (
         <section className="sheet sheet-data" aria-modal="true">
           <div className="grabber" />
-          <div className="sheet-title"><div><small>{selected ? 'Parcelle sélectionnée' : pickedLocation ? 'Parcelle au sélecteur' : 'Parcelle la plus proche du centre'}{cacheLabel ? ` · maj ${cacheLabel}` : ''}</small><h2>Données de la zone</h2></div><button className="icon-button" onClick={closeSheet}><X size={20} /></button></div>
+          <div className="sheet-title"><div><small>{selectedFavorite ? 'Favori sélectionné' : selected ? 'Parcelle sélectionnée' : pickedLocation ? 'Parcelle au sélecteur' : 'Parcelle la plus proche du centre'}{cacheLabel ? ` · maj ${cacheLabel}` : ''}</small><h2>Données de la zone</h2></div><button className="icon-button" onClick={closeSheet}><X size={20} /></button></div>
           {!dataTarget || !dataWeather ? (
             <div className="empty">{
-              selectorLookupLoading
-                ? 'Recherche de la parcelle IGN exacte au sélecteur…'
-                : pickedLocation && selectorLookupDone
+              favoriteDataLoading
+                ? 'Actualisation des données du favori…'
+                : selectedFavorite
+                  ? 'Les données détaillées de ce favori sont momentanément indisponibles.'
+                  : selectorLookupLoading
+                    ? 'Recherche de la parcelle IGN exacte au sélecteur…'
+                    : pickedLocation && selectorLookupDone
                   ? 'Aucune parcelle forestière IGN ne couvre exactement ce sélecteur.'
                   : loading
                     ? 'Analyse de la zone en cours…'
