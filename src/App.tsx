@@ -682,6 +682,96 @@ export default function App() {
     setSheet(null);
   }
 
+  function isFavorite(point: PotentialPoint, targetSpecies = species) {
+    return favorites.some((item) => item.id === favoriteId(targetSpecies, point.id));
+  }
+
+  async function requestFavoriteNotifications() {
+    if (!('Notification' in window)) return false;
+    if (Notification.permission === 'granted') return true;
+    if (Notification.permission === 'denied') return false;
+    try {
+      return await Notification.requestPermission() === 'granted';
+    } catch {
+      return false;
+    }
+  }
+
+  async function showFavoriteNotification(item: FavoriteSpot) {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    try {
+      const registration = await navigator.serviceWorker?.ready;
+      if (!registration) return;
+      const target = `${import.meta.env.BASE_URL}?favorite=${encodeURIComponent(item.id)}`;
+      await registration.showNotification(`MycoMap · ${SPECIES[item.species].label} : c’est le moment`, {
+        body: `${item.zone.name} passe à ${item.lastScore ?? '—'}/100 · habitat ${item.lastHabitatScore ?? '—'}/100.`,
+        tag: `mycomap-favorite-${item.id}`,
+        data: { url: target, favoriteId: item.id }
+      });
+    } catch {
+      // La surveillance locale continue même si la notification système n'est pas disponible.
+    }
+  }
+
+  async function toggleFavorite(point: PotentialPoint) {
+    const id = favoriteId(species, point.id);
+    const existing = favoritesRef.current.find((item) => item.id === id);
+    if (existing) {
+      setFavorites((current) => current.filter((item) => item.id !== id));
+      setNotice('Coin retiré des favoris surveillés.');
+      return;
+    }
+
+    const favorite = favoriteFromPotential(species, point);
+    setFavorites((current) => [favorite, ...current]);
+    const notificationsEnabled = await requestFavoriteNotifications();
+    setNotice(notificationsEnabled
+      ? 'Coin ajouté aux favoris : MycoMap te préviendra lorsqu’il repassera à 50/100 ou plus.'
+      : 'Coin ajouté aux favoris. La surveillance fonctionne à l’ouverture de MycoMap ; autorise les notifications pour recevoir l’alerte système.');
+  }
+
+  async function focusFavorite(item: FavoriteSpot) {
+    setSpecies(item.species);
+    setMapMode('now');
+    setSheet(null);
+    setPickedLocation(null);
+    await loadArea({ lat: item.lat, lon: item.lon }, true);
+    setSelectedId(item.zone.id);
+  }
+
+  async function refreshFavorites() {
+    if (!navigator.onLine || favoritesRef.current.length === 0) return;
+
+    const original = favoritesRef.current;
+    const next: FavoriteSpot[] = [];
+    const notifications: FavoriteSpot[] = [];
+
+    for (const item of original) {
+      try {
+        const snapshot = await fetchCurrentWeather(item.lat, item.lon);
+        const scored = scoreZone(item.species, item.zone, snapshot, observationsRef.current);
+        const crossedThreshold = !item.alertActive && scored.finalScore >= DISPLAY_MIN_SCORE;
+        const updated: FavoriteSpot = {
+          ...item,
+          lastScore: scored.finalScore,
+          lastHabitatScore: scored.habitatScore,
+          lastConditionScore: scored.conditionScore,
+          lastHydricScore: scored.hydricScore,
+          lastCheckedAt: new Date().toISOString(),
+          alertActive: scored.finalScore >= DISPLAY_MIN_SCORE
+        };
+        next.push(updated);
+        if (crossedThreshold) notifications.push(updated);
+      } catch {
+        next.push(item);
+      }
+    }
+
+    favoritesRef.current = next;
+    setFavorites(next);
+    for (const item of notifications) await showFavoriteNotification(item);
+  }
+
   function openObservation(location = pickedLocation ?? gpsFix ?? currentMapCenter(), source: Observation['source'] = pickedLocation ? 'map' : 'gps') {
     setDraft({ outcome: 'found', count: 1, durationMinutes: 60, observedAt: new Date(), location, source });
     setSheet('observation');
