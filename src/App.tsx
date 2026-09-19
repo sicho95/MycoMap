@@ -108,6 +108,46 @@ function polygonGeojson(zones: PotentialPoint[]) {
   };
 }
 
+function favoritePointsGeojson(items: FavoriteSpot[]) {
+  return pointGeojson(items.map((item) => ({
+    lat: item.lat,
+    lon: item.lon,
+    favoriteId: item.id,
+    zoneId: item.zone.id,
+    species: item.species,
+    lastScore: item.lastScore ?? -1
+  })));
+}
+
+function favoritePolygonsGeojson(items: FavoriteSpot[]) {
+  return {
+    type: 'FeatureCollection' as const,
+    features: items
+      .filter((item) => item.zone.geometry)
+      .map((item) => ({
+        type: 'Feature' as const,
+        geometry: item.zone.geometry!,
+        properties: {
+          favoriteId: item.id,
+          zoneId: item.zone.id,
+          species: item.species,
+          lastScore: item.lastScore ?? -1
+        }
+      }))
+  };
+}
+
+function selectedFavoritePolygonGeojson(item: FavoriteSpot | null) {
+  return {
+    type: 'FeatureCollection' as const,
+    features: item?.zone.geometry ? [{
+      type: 'Feature' as const,
+      geometry: item.zone.geometry,
+      properties: { favoriteId: item.id }
+    }] : []
+  };
+}
+
 function SpeciesIcon({ species, size = 22 }: { species: Species; size?: number }) {
   const common = { width: size, height: size, flex: '0 0 auto', display: 'block' } as const;
 
@@ -250,6 +290,7 @@ export default function App() {
   const [sheet, setSheet] = useState<Sheet>(null);
   const [pickedLocation, setPickedLocation] = useState<LatLng | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedFavoriteId, setSelectedFavoriteId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
@@ -278,6 +319,7 @@ export default function App() {
   );
 
   const selected = useMemo(() => potentials.find((item) => item.id === selectedId) ?? null, [potentials, selectedId]);
+  const selectedFavorite = useMemo(() => favorites.find((item) => item.id === selectedFavoriteId) ?? null, [favorites, selectedFavoriteId]);
   const selectedDisplayScore = selected ? (mapMode === 'habitat' ? selected.habitatScore : selected.finalScore) : null;
 
   const dataTarget = useMemo(() => {
