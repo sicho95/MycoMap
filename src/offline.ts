@@ -142,7 +142,7 @@ async function deleteStoreValue(storeName: string, key: string): Promise<void> {
   }
 }
 
-function distanceMeters(a: LatLng, b: LatLng) {
+function distanceMeters(a: { lat: number; lon: number }, b: { lat: number; lon: number }) {
   const r = 6371000;
   const toRad = (value: number) => value * Math.PI / 180;
   const dLat = toRad(b.lat - a.lat);
