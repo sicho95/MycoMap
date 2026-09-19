@@ -1243,7 +1243,7 @@ export default function App() {
         <section className="zone-card glass" onClick={() => setSheet('data')} role="button" aria-label="Ouvrir le détail de cette parcelle">
           <button className="close-mini" onClick={(event) => { event.stopPropagation(); setSelectedId(null); setSelectedFavoriteId(null); }}><X size={16} /></button>
           <button className={`favorite-mini${isFavorite(selected) ? ' active' : ''}`} onClick={(event) => { event.stopPropagation(); void toggleFavorite(selected); }} aria-label={isFavorite(selected) ? 'Retirer des favoris' : 'Surveiller ce coin'}><Star size={16} fill={isFavorite(selected) ? 'currentColor' : 'none'} /></button>
-          <div className="zone-score" style={{ color: scoreColor(selectedDisplayScore) }}>{selectedDisplayScore}</div>
+          <div className="zone-score" style={{ color: selectedFavorite && mapMode === 'now' && selected.finalScore < DISPLAY_MIN_SCORE ? '#69736d' : scoreColor(selectedDisplayScore) }}>{selectedDisplayScore}</div>
           <div className="zone-copy"><b>{mapMode === 'habitat' ? 'Qualité du coin' : scoreLabel(selected.finalScore)}</b><span>{selected.name}</span><small>Coin {selected.habitatScore}/100 · Maintenant {selected.finalScore}/100 · Moment {selected.conditionScore}/100</small></div>
         </section>
       )}
@@ -1292,7 +1292,7 @@ export default function App() {
               .sort((a, b) => (b.lastScore ?? -1) - (a.lastScore ?? -1))
               .map((favorite) => (
                 <article className="favorite-row" key={favorite.id} onClick={() => void focusFavorite(favorite)}>
-                  <div className="favorite-score" style={{ color: favorite.lastScore == null ? 'var(--muted)' : scoreColor(favorite.lastScore) }}>{favorite.lastScore ?? '—'}</div>
+                  <div className="favorite-score" style={{ color: favorite.lastScore == null || favorite.lastScore < DISPLAY_MIN_SCORE ? 'var(--muted)' : scoreColor(favorite.lastScore) }}>{favorite.lastScore ?? '—'}</div>
                   <div><b><SpeciesIcon species={favorite.species} size={17} /> {favorite.zone.name}</b><span>Coin {favorite.lastHabitatScore ?? '—'}/100 · maintenant {favorite.lastScore ?? '—'}/100 · moment {favorite.lastConditionScore ?? '—'}/100</span><small>Prochaine alerte : {favorite.lastAlertLevel == null ? '50' : favorite.lastAlertLevel + 5}/100 · {favorite.lastCheckedAt ? `vérifié ${new Date(favorite.lastCheckedAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}` : 'pas encore vérifié'}</small></div>
                   <button className="delete favorite-delete" onClick={(event) => { event.stopPropagation(); setFavorites((current) => current.filter((item) => item.id !== favorite.id)); }} aria-label="Retirer des favoris"><Star size={17} fill="currentColor" /></button>
                 </article>
