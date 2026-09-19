@@ -1,16 +1,7 @@
 import type { LatLng } from './domain';
 
-const REVERSE_URL = 'https://data.geopf.fr/geocodage/reverse';
-
-function municipalityFromPayload(payload: any): string | null {
-  const features = Array.isArray(payload?.features) ? payload.features : [];
-  for (const feature of features) {
-    const props = feature?.properties ?? {};
-    const city = props.city ?? props.municipality ?? props.commune ?? props.name;
-    if (typeof city === 'string' && city.trim()) return city.trim();
-  }
-  return null;
-}
+const ADMIN_COMMUNE_URL = 'https://geo.api.gouv.fr/communes';
+const GEOPF_REVERSE_URL = 'https://data.geopf.fr/geocodage/reverse';
 
 async function fetchJson(url: URL, timeoutMs = 9000) {
   const controller = new AbortController();
@@ -27,36 +18,64 @@ async function fetchJson(url: URL, timeoutMs = 9000) {
   }
 }
 
+function municipalityFromGeoApi(payload: any): string | null {
+  const rows = Array.isArray(payload) ? payload : [];
+  const name = rows[0]?.nom;
+  return typeof name === 'string' && name.trim() ? name.trim() : null;
+}
+
+function municipalityFromGeopf(payload: any): string | null {
+  const features = Array.isArray(payload?.features) ? payload.features : [];
+  for (const feature of features) {
+    const props = feature?.properties ?? {};
+    const city = props.city ?? props.municipality ?? props.commune ?? props.name;
+    if (typeof city === 'string' && city.trim()) return city.trim();
+  }
+  return null;
+}
+
 export async function fetchMunicipality(point: LatLng): Promise<string | null> {
-  // 1) Une adresse proche fournit généralement directement la commune.
+  // Source primaire : API Découpage administratif.
+  // La recherche lat/lon retourne la commune administrative contenant réellement le point.
   try {
-    const url = new URL(REVERSE_URL);
+    const url = new URL(ADMIN_COMMUNE_URL);
+    url.searchParams.set('lat', point.lat.toFixed(6));
+    url.searchParams.set('lon', point.lon.toFixed(6));
+    url.searchParams.set('fields', 'nom,code');
+    url.searchParams.set('format', 'json');
+    const municipality = municipalityFromGeoApi(await fetchJson(url));
+    if (municipality) return municipality;
+  } catch {
+    // Fallback Géoplateforme ci-dessous.
+  }
+
+  // Fallback 1 : commune portée par l'adresse la plus proche.
+  try {
+    const url = new URL(GEOPF_REVERSE_URL);
     url.searchParams.set('lat', point.lat.toFixed(6));
     url.searchParams.set('lon', point.lon.toFixed(6));
     url.searchParams.set('index', 'address');
     url.searchParams.set('limit', '1');
-    const municipality = municipalityFromPayload(await fetchJson(url));
+    const municipality = municipalityFromGeopf(await fetchJson(url));
     if (municipality) return municipality;
   } catch {
-    // Les secteurs forestiers n'ont pas toujours d'adresse proche : fallback administratif ci-dessous.
+    // Fallback POI administratif ci-dessous.
   }
 
-  // 2) Fallback précis sur le POI "commune", rayon volontairement minuscule pour éviter
-  // de retourner la commune voisine lorsque le point est proche d'une limite administrative.
+  // Fallback 2 : POI administratif dans un cercle très local.
   try {
-    const url = new URL(REVERSE_URL);
-    const searchgeom = {
-      type: 'Circle',
-      coordinates: [point.lon, point.lat],
-      radius: 1
-    };
+    const url = new URL(GEOPF_REVERSE_URL);
     url.searchParams.set('lat', point.lat.toFixed(6));
     url.searchParams.set('lon', point.lon.toFixed(6));
     url.searchParams.set('index', 'poi');
     url.searchParams.set('category', 'commune');
-    url.searchParams.set('searchgeom', JSON.stringify(searchgeom));
+    url.searchParams.set('searchgeom', JSON.stringify({
+      type: 'Circle',
+      coordinates: [point.lon, point.lat],
+      radius: 100
+    }));
     url.searchParams.set('limit', '1');
-    return municipalityFromPayload(await fetchJson(url));
+    return municipalityFromGeopf(await fetchJson(url));
   } catch {
     return null;
   }
