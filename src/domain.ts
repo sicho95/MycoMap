@@ -90,6 +90,19 @@ export interface Observation extends LatLng {
   weather?: WeatherSnapshot;
   conditionScore?: number;
   habitatLabel?: string;
+  modelSnapshot?: {
+    finalScore: number;
+    habitatScore: number;
+    forestScore: number;
+    soilScore: number;
+    terrainScore: number;
+    seasonScore: number;
+    conditionScore: number;
+    hydricScore: number;
+    hydricRelativeWaterPct: number | null;
+    hydricLabel: string;
+    capturedAt: string;
+  };
 }
 
 export interface PotentialPoint extends ForestZone {
