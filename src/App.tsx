@@ -423,6 +423,7 @@ export default function App() {
       if (document.visibilityState === 'visible' && navigator.onLine) {
         void refreshFavorites();
         void enrichFavoriteCommunes();
+        void enrichObservationCommunes();
       }
     };
     const initialTimer = window.setTimeout(refresh, 1200);
@@ -460,12 +461,17 @@ export default function App() {
       void syncPendingObservations();
       void refreshFavorites();
       void enrichFavoriteCommunes();
+      void enrichObservationCommunes();
       void loadArea(currentMapCenter(), false);
     };
     const onOffline = () => setIsOnline(false);
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
-    if (navigator.onLine) void syncPendingObservations();
+    if (navigator.onLine) {
+      void syncPendingObservations();
+      void enrichFavoriteCommunes();
+      void enrichObservationCommunes();
+    }
     return () => {
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
@@ -1029,7 +1035,7 @@ export default function App() {
 
   async function enrichFavoriteCommunes() {
     if (!navigator.onLine) return;
-    const missing = favoritesRef.current.filter((item) => !item.commune);
+    const missing = favoritesRef.current.filter((item) => item.commune === undefined);
     if (!missing.length) return;
 
     // Petits lots pour rester léger même avec beaucoup de coins sauvegardés.
@@ -1039,9 +1045,24 @@ export default function App() {
         id: item.id,
         commune: await fetchMunicipality({ lat: item.lat, lon: item.lon })
       })));
-      const byId = new Map(resolved.filter((item) => item.commune).map((item) => [item.id, item.commune] as const));
-      if (!byId.size) continue;
-      setFavorites((current) => current.map((item) => byId.has(item.id) ? { ...item, commune: byId.get(item.id) ?? item.commune } : item));
+      const byId = new Map(resolved.map((item) => [item.id, item.commune] as const));
+      setFavorites((current) => current.map((item) => byId.has(item.id) ? { ...item, commune: byId.get(item.id) ?? null } : item));
+    }
+  }
+
+  async function enrichObservationCommunes() {
+    if (!navigator.onLine) return;
+    const missing = observationsRef.current.filter((item) => item.commune === undefined);
+    if (!missing.length) return;
+
+    for (let offset = 0; offset < missing.length; offset += 4) {
+      const chunk = missing.slice(offset, offset + 4);
+      const resolved = await Promise.all(chunk.map(async (item) => ({
+        id: item.id,
+        commune: await fetchMunicipality({ lat: item.lat, lon: item.lon })
+      })));
+      const byId = new Map(resolved.map((item) => [item.id, item.commune] as const));
+      setObservations((current) => current.map((item) => byId.has(item.id) ? { ...item, commune: byId.get(item.id) ?? null } : item));
     }
   }
 
@@ -1294,6 +1315,7 @@ export default function App() {
       weather: snapshot,
       conditionScore,
       habitatLabel: nearest?.name,
+      commune: undefined,
       modelSnapshot: scoreAtObservation ? {
         finalScore: scoreAtObservation.finalScore,
         habitatScore: scoreAtObservation.habitatScore,
@@ -1312,6 +1334,11 @@ export default function App() {
     };
 
     setObservations((current) => [item, ...current]);
+    if (navigator.onLine) {
+      void fetchMunicipality({ lat: item.lat, lon: item.lon }).then((commune) => {
+        setObservations((current) => current.map((candidate) => candidate.id === item.id ? { ...candidate, commune: commune ?? null } : candidate));
+      });
+    }
     setPickedLocation(null);
     setSheet(null);
     setSaving(false);
@@ -1534,7 +1561,7 @@ export default function App() {
               .map((favorite) => (
                 <article className="favorite-row" key={favorite.id} onClick={() => void focusFavorite(favorite)}>
                   <div className="favorite-score" style={{ color: favorite.lastScore == null || favorite.lastScore < DISPLAY_MIN_SCORE ? 'var(--muted)' : scoreColor(favorite.lastScore) }}>{favorite.lastScore ?? '—'}</div>
-                  <div><b><SpeciesIcon species={favorite.species} size={17} /> {favorite.zone.name}</b><small className="favorite-commune"><MapPin size={12} /> {favorite.commune ?? (isOnline ? 'Commune en cours…' : 'Commune non disponible hors ligne')}</small><span>Coin {favorite.lastHabitatScore ?? '—'}/100 · maintenant {favorite.lastScore ?? '—'}/100 · moment {favorite.lastConditionScore ?? '—'}/100</span><small>Prochaine alerte : {favorite.lastAlertLevel == null ? '50' : favorite.lastAlertLevel + 5}/100 · {favorite.lastCheckedAt ? `vérifié ${new Date(favorite.lastCheckedAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}` : 'pas encore vérifié'}</small></div>
+                  <div><b><SpeciesIcon species={favorite.species} size={17} /> {favorite.zone.name}</b><small className="favorite-commune"><MapPin size={12} /> {favorite.commune === undefined ? (isOnline ? 'Commune en cours…' : 'Commune non disponible hors ligne') : favorite.commune ?? 'Commune non trouvée'}</small><span>Coin {favorite.lastHabitatScore ?? '—'}/100 · maintenant {favorite.lastScore ?? '—'}/100 · moment {favorite.lastConditionScore ?? '—'}/100</span><small>Prochaine alerte : {favorite.lastAlertLevel == null ? '50' : favorite.lastAlertLevel + 5}/100 · {favorite.lastCheckedAt ? `vérifié ${new Date(favorite.lastCheckedAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}` : 'pas encore vérifié'}</small></div>
                   <button className="delete favorite-delete" onClick={(event) => { event.stopPropagation(); removeFavorite(favorite); }} aria-label="Supprimer ce favori"><Trash2 size={17} /></button>
                 </article>
               ))}
@@ -1545,7 +1572,7 @@ export default function App() {
             {observations.map((obs) => (
               <article className="observation" key={obs.id} onClick={() => { mapRef.current?.flyTo({ center: [obs.lon, obs.lat], zoom: 14 }); setSheet(null); }}>
                 <div className={`result-icon ${obs.outcome}`}>{obs.outcome === 'found' ? <SpeciesIcon species={obs.species} size={26} /> : '○'}</div>
-                <div><b>{SPECIES[obs.species].label} · {obs.outcome === 'found' ? `${obs.count} trouvé${obs.count > 1 ? 's' : ''}` : 'rien trouvé'}</b><span>{new Date(obs.observedAt).toLocaleDateString('fr-FR')} · {obs.durationMinutes} min · score au moment {obs.modelSnapshot?.finalScore ?? '—'}/100{obs.pendingEnrichment ? ' · à compléter' : ''}</span>{obs.modelSnapshot && <small>Habitat {obs.modelSnapshot.habitatScore}/100 · hydrique {obs.modelSnapshot.hydricScore}/100 · moment {obs.modelSnapshot.conditionScore}/100</small>}{obs.photoStored && <small>Photo conservée hors ligne</small>}{obs.habitatLabel && <small>{obs.habitatLabel}</small>}</div>
+                <div><b>{SPECIES[obs.species].label} · {obs.outcome === 'found' ? `${obs.count} trouvé${obs.count > 1 ? 's' : ''}` : 'rien trouvé'}</b><small className="observation-commune"><MapPin size={12} /> {obs.commune === undefined ? (isOnline ? 'Commune en cours…' : 'Commune non disponible hors ligne') : obs.commune ?? 'Commune non trouvée'}</small><span>{new Date(obs.observedAt).toLocaleDateString('fr-FR')} · {obs.durationMinutes} min · score au moment {obs.modelSnapshot?.finalScore ?? '—'}/100{obs.pendingEnrichment ? ' · à compléter' : ''}</span>{obs.modelSnapshot && <small>Habitat {obs.modelSnapshot.habitatScore}/100 · hydrique {obs.modelSnapshot.hydricScore}/100 · moment {obs.modelSnapshot.conditionScore}/100</small>}{obs.photoStored && <small>Photo conservée hors ligne</small>}{obs.habitatLabel && <small>{obs.habitatLabel}</small>}</div>
                 <button className="delete" onClick={(e) => { e.stopPropagation(); deleteObservation(obs); }} aria-label="Supprimer cette sortie"><Trash2 size={17} /></button>
               </article>
             ))}
