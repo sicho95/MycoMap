@@ -1,5 +1,5 @@
 import type { WeatherSnapshot } from './domain';
-import { getCachedWeather, putCachedWeather } from './offline';
+import { getCachedWeather, putCachedWeather, WEATHER_CACHE_MAX_AGE_MS } from './offline';
 
 const avg = (values: Array<number | null | undefined>) => {
   const usable = values.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
@@ -99,7 +99,7 @@ async function cachedFirst(
   const cached = await getCachedWeather(lat, lon, date);
   const historical = Date.now() - date.getTime() > 48 * 60 * 60 * 1000;
   const hasLongSignals = !!cached && cached.snapshot.rain84 != null && cached.snapshot.gdd84Base5 != null;
-  const recentCacheFresh = cached && hasLongSignals && Date.now() - cached.updatedAt < 6 * 60 * 60 * 1000;
+  const recentCacheFresh = cached && hasLongSignals && Date.now() - cached.updatedAt < WEATHER_CACHE_MAX_AGE_MS;
 
   if (!navigator.onLine) {
     if (cached) return cached.snapshot;
