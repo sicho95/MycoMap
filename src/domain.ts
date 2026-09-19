@@ -99,6 +99,9 @@ export interface PotentialPoint extends ForestZone {
   habitatScore: number;
   seasonScore: number;
   conditionScore: number;
+  hydricScore: number;
+  hydricRelativeWaterPct: number | null;
+  hydricLabel: string;
   personalCorrection: number;
   finalScore: number;
   reasons: string[];
