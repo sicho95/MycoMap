@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import type { FavoriteSpot, LatLng, Observation, ObservationOutcome, PotentialPoint, Species, ThemeMode, WeatherSnapshot } from './domain';
 import { loadObservations, loadTheme, persistObservations, persistTheme, SPECIES } from './domain';
-import { fetchForestZones } from './environment';
+import { fetchForestZoneAtPoint, fetchForestZones } from './environment';
 import { favoriteFromPotential, favoriteId, loadFavorites, persistFavorites } from './favorites';
 import {
   deleteObservationPhoto,
@@ -325,6 +325,10 @@ export default function App() {
   const [pickedLocation, setPickedLocation] = useState<LatLng | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedFavoriteId, setSelectedFavoriteId] = useState<string | null>(null);
+  const [selectorDataTarget, setSelectorDataTarget] = useState<PotentialPoint | null>(null);
+  const [selectorWeather, setSelectorWeather] = useState<WeatherSnapshot | null>(null);
+  const [selectorLookupLoading, setSelectorLookupLoading] = useState(false);
+  const [selectorLookupDone, setSelectorLookupDone] = useState(false);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
@@ -361,15 +365,7 @@ export default function App() {
 
     if (pickedLocation) {
       const containing = potentials.find((candidate) => pointInZoneGeometry(pickedLocation, candidate));
-      if (containing) return containing;
-
-      const nearbyToPicker = potentials.filter((candidate) => distanceMeters(candidate, pickedLocation) <= 12000);
-      if (nearbyToPicker.length) {
-        return nearbyToPicker.reduce((closest, candidate) =>
-          distanceMeters(candidate, pickedLocation) < distanceMeters(closest, pickedLocation) ? candidate : closest
-        );
-      }
-      return null;
+      return containing ?? selectorDataTarget;
     }
 
     const nearby = potentials.filter((candidate) => distanceMeters(candidate, position) <= 12000);
@@ -377,7 +373,13 @@ export default function App() {
     return nearby.reduce((closest, candidate) =>
       distanceMeters(candidate, position) < distanceMeters(closest, position) ? candidate : closest
     );
-  }, [selected, pickedLocation, potentials, position]);
+  }, [selected, pickedLocation, potentials, position, selectorDataTarget]);
+
+  const dataWeather = useMemo(() => {
+    if (!pickedLocation || selected) return weather;
+    const containing = potentials.find((candidate) => pointInZoneGeometry(pickedLocation, candidate));
+    return containing ? weather : selectorWeather;
+  }, [pickedLocation, selected, potentials, weather, selectorWeather]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -673,6 +675,9 @@ export default function App() {
       if (hit.length) return;
       setSelectedId(null);
       setSelectedFavoriteId(null);
+      setSelectorDataTarget(null);
+      setSelectorWeather(null);
+      setSelectorLookupDone(false);
       setPickedLocation({ lat: event.lngLat.lat, lon: event.lngLat.lng });
     });
 
@@ -943,6 +948,43 @@ export default function App() {
 
   function closeSheet() {
     setSheet(null);
+  }
+
+  async function openDataSheet() {
+    setSheet('data');
+
+    if (selected || !pickedLocation) return;
+
+    const exactKnown = potentials.find((candidate) => pointInZoneGeometry(pickedLocation, candidate));
+    if (exactKnown) {
+      setSelectorDataTarget(null);
+      setSelectorWeather(null);
+      setSelectorLookupDone(true);
+      return;
+    }
+
+    setSelectorLookupLoading(true);
+    setSelectorLookupDone(false);
+    setSelectorDataTarget(null);
+    setSelectorWeather(null);
+
+    try {
+      const [zone, localWeather] = await Promise.all([
+        fetchForestZoneAtPoint(pickedLocation),
+        fetchCurrentWeather(pickedLocation.lat, pickedLocation.lon)
+      ]);
+
+      if (zone) {
+        setSelectorWeather(localWeather);
+        setSelectorDataTarget(scoreZone(species, zone, localWeather, observationsRef.current));
+      }
+      setSelectorLookupDone(true);
+    } catch {
+      setSelectorLookupDone(true);
+      setNotice('Impossible de vérifier précisément la parcelle IGN au sélecteur pour le moment.');
+    } finally {
+      setSelectorLookupLoading(false);
+    }
   }
 
   function isFavorite(point: PotentialPoint, targetSpecies = species) {
@@ -1304,7 +1346,7 @@ export default function App() {
       <nav className="bottom-nav glass" aria-label="Actions principales">
         <button onClick={() => setSheet('spots')}><Database size={21} /><span>Mes coins</span></button>
         <button className="primary-action" onClick={() => openObservation()}><Plus size={27} /><span>Sortie</span></button>
-        <button onClick={() => setSheet('data')}><Layers3 size={21} /><span>Données</span></button>
+        <button onClick={() => void openDataSheet()}><Layers3 size={21} /><span>Données</span></button>
       </nav>
 
       {sheet && <div className="scrim" onClick={closeSheet} />}
@@ -1364,8 +1406,18 @@ export default function App() {
         <section className="sheet sheet-data" aria-modal="true">
           <div className="grabber" />
           <div className="sheet-title"><div><small>{selected ? 'Parcelle sélectionnée' : pickedLocation ? 'Parcelle au sélecteur' : 'Parcelle la plus proche du centre'}{cacheLabel ? ` · maj ${cacheLabel}` : ''}</small><h2>Données de la zone</h2></div><button className="icon-button" onClick={closeSheet}><X size={20} /></button></div>
-          {!dataTarget || !weather ? (
-            <div className="empty">{loading ? 'Analyse de la zone en cours…' : !isOnline ? 'Zone non disponible dans le cache hors ligne.' : 'Aucune parcelle analysée disponible ici pour le moment.'}</div>
+          {!dataTarget || !dataWeather ? (
+            <div className="empty">{
+              selectorLookupLoading
+                ? 'Recherche de la parcelle IGN exacte au sélecteur…'
+                : pickedLocation && selectorLookupDone
+                  ? 'Aucune parcelle forestière IGN ne couvre exactement ce sélecteur.'
+                  : loading
+                    ? 'Analyse de la zone en cours…'
+                    : !isOnline
+                      ? 'Zone non disponible dans le cache hors ligne.'
+                      : 'Aucune parcelle analysée disponible ici pour le moment.'
+            }</div>
           ) : (
             <>
               <div className="data-summary"><div className="data-total" style={{ color: scoreColor(dataTarget.finalScore) }}>{dataTarget.finalScore}</div><div><b>{scoreLabel(dataTarget.finalScore)}</b><span>{dataTarget.name}</span><small>Qualité du coin {dataTarget.habitatScore}/100 · moment {dataTarget.conditionScore}/100</small><small>{dataTarget.lat.toFixed(5)}, {dataTarget.lon.toFixed(5)}</small></div><button className={`data-favorite${isFavorite(dataTarget) ? ' active' : ''}`} onClick={() => void toggleFavorite(dataTarget)} aria-label={isFavorite(dataTarget) ? 'Retirer des favoris' : 'Surveiller ce coin'}><Star size={19} fill={isFavorite(dataTarget) ? 'currentColor' : 'none'} /></button></div>
@@ -1375,7 +1427,7 @@ export default function App() {
               <div className="data-section"><h3>Forêt</h3><div className="metric-row"><span>Formation</span><b>{dataTarget.forestType || dataTarget.name || '—'}</b></div><div className="metric-row"><span>Essence dominante</span><b>{dataTarget.essence || 'Non précisée'}</b></div><div className="metric-row"><span>Code IGN</span><b>{dataTarget.forestCode || '—'}</b></div></div>
               <div className="data-section"><h3>Relief</h3><div className="metric-row"><span>Altitude</span><b>{numberOrDash(dataTarget.elevation)} m</b></div><div className="metric-row"><span>Pente</span><b>{numberOrDash(dataTarget.slope, 1)}°</b></div><div className="metric-row"><span>Exposition</span><b>{aspectLabel(dataTarget.aspect)}</b></div></div>
               <div className="data-section"><h3>Sol</h3>{dataTarget.soil ? <><div className="metric-row"><span>pH</span><b>{numberOrDash(dataTarget.soil.ph, 1)}</b></div><div className="metric-row"><span>Texture</span><b>{dataTarget.soil.textureClass}</b></div><div className="metric-row"><span>Drainage estimé</span><b>{dataTarget.soil.drainageClass}</b></div><div className="metric-row"><span>Sable</span><b>{numberOrDash(dataTarget.soil.sandPct, 1)} %</b></div><div className="metric-row"><span>Limon</span><b>{numberOrDash(dataTarget.soil.siltPct, 1)} %</b></div><div className="metric-row"><span>Argile</span><b>{numberOrDash(dataTarget.soil.clayPct, 1)} %</b></div><div className="metric-row"><span>Éléments grossiers</span><b>{numberOrDash(dataTarget.soil.coarseFragmentsPct, 1)} %</b></div><div className="metric-row"><span>Capacité au champ</span><b>{numberOrDash(dataTarget.soil.fieldCapacityPct, 1)} %</b></div><div className="metric-row"><span>Point de flétrissement</span><b>{numberOrDash(dataTarget.soil.wiltingPointPct, 1)} %</b></div><div className="metric-row"><span>Réserve utile potentielle</span><b>{numberOrDash(dataTarget.soil.availableWaterPct, 1)} %</b></div></> : <div className="data-unavailable">Données pédologiques structurées indisponibles pour cette parcelle.</div>}</div>
-              <div className="data-section"><h3>Météo utilisée</h3><div className="metric-row"><span>État hydrique actuel</span><b>{dataTarget.hydricLabel} · {dataTarget.hydricScore}/100</b></div><div className="metric-row"><span>Eau utile disponible</span><b>{dataTarget.hydricRelativeWaterPct == null ? '—' : `${dataTarget.hydricRelativeWaterPct} %`}</b></div><div className="metric-row"><span>Pluie 3 jours</span><b>{numberOrDash(weather.rain3, 1)} mm</b></div><div className="metric-row"><span>Pluie 7 jours</span><b>{numberOrDash(weather.rain7, 1)} mm</b></div><div className="metric-row"><span>Pluie 14 jours</span><b>{numberOrDash(weather.rain14, 1)} mm</b></div><div className="metric-row"><span>Pluie 30 jours</span><b>{numberOrDash(weather.rain30, 1)} mm</b></div><div className="metric-row"><span>Humidité du sol (modèle)</span><b>{weather.soilMoisture == null ? '—' : `${(weather.soilMoisture * 100).toFixed(1)} %`}</b></div><div className="metric-row"><span>Température du sol</span><b>{numberOrDash(weather.soilTemp, 1)} °C</b></div><div className="metric-row"><span>Température moyenne 7 j</span><b>{numberOrDash(weather.airTemp7, 1)} °C</b></div></div>
+              <div className="data-section"><h3>Météo utilisée</h3><div className="metric-row"><span>État hydrique actuel</span><b>{dataTarget.hydricLabel} · {dataTarget.hydricScore}/100</b></div><div className="metric-row"><span>Eau utile disponible</span><b>{dataTarget.hydricRelativeWaterPct == null ? '—' : `${dataTarget.hydricRelativeWaterPct} %`}</b></div><div className="metric-row"><span>Pluie 3 jours</span><b>{numberOrDash(dataWeather.rain3, 1)} mm</b></div><div className="metric-row"><span>Pluie 7 jours</span><b>{numberOrDash(dataWeather.rain7, 1)} mm</b></div><div className="metric-row"><span>Pluie 14 jours</span><b>{numberOrDash(dataWeather.rain14, 1)} mm</b></div><div className="metric-row"><span>Pluie 30 jours</span><b>{numberOrDash(dataWeather.rain30, 1)} mm</b></div><div className="metric-row"><span>Humidité du sol (modèle)</span><b>{dataWeather.soilMoisture == null ? '—' : `${(dataWeather.soilMoisture * 100).toFixed(1)} %`}</b></div><div className="metric-row"><span>Température du sol</span><b>{numberOrDash(dataWeather.soilTemp, 1)} °C</b></div><div className="metric-row"><span>Température moyenne 7 j</span><b>{numberOrDash(dataWeather.airTemp7, 1)} °C</b></div></div>
               <p className="data-note">{isOnline ? 'Le cache est affiché immédiatement puis actualisé silencieusement. Le score « Moment » intègre maintenant le déficit hydrique relatif du sol : une parcelle structurellement excellente peut donc chuter fortement lorsqu’elle est trop sèche.' : 'Mode hors ligne : le score utilise les dernières données locales disponibles. Les nouvelles observations modifient immédiatement la correction terrain.'}</p>
               <p className="data-credits">Sources : IGN BD Forêt v2 et RGE ALTI · SoilGrids 2.0 / ISRIC · Open-Meteo.</p>
             </>
