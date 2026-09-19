@@ -40,8 +40,10 @@ import { fetchCurrentWeather, fetchWeatherForDate } from './weather';
 
 const FALLBACK: LatLng = { lat: 48.78, lon: 2.26 };
 const IGN_PLAN_TILE = 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM&TILEROW={y}&TILECOL={x}&TILEMATRIX={z}&FORMAT=image/png';
-const VIEWPORT_RELOAD_DISTANCE_METERS = 4500;
+const VIEWPORT_RELOAD_DISTANCE_METERS = 8000;
 const AREA_RADIUS_METERS = 25000;
+const ZONE_MOSAIC_KEEP_METERS = 65000;
+const ZONE_MOSAIC_MAX_COUNT = 1600;
 const DISPLAY_MIN_SCORE = 50;
 const WEATHER_REUSE_DISTANCE_METERS = 3500;
 const STATIC_REVALIDATE_DISTANCE_METERS = 7000;
@@ -253,6 +255,57 @@ function pointInZoneGeometry(point: LatLng, zone: PotentialPoint) {
     if (!outer || !pointInRing(point, outer)) return false;
     return !holes.some((ring) => pointInRing(point, ring));
   });
+}
+
+function zoneDetailRank(zone: Awaited<ReturnType<typeof fetchForestZones>>[number]) {
+  let rank = 0;
+  if (zone.geometry) rank += 2;
+  if (zone.elevation != null) rank += 1;
+  if (zone.slope != null) rank += 1;
+  if (zone.aspect != null) rank += 1;
+  if (zone.soil) rank += 6;
+  if (zone.microclimate?.detailVersion === 1) rank += 8;
+  if (zone.microclimate?.lidarAvailable) rank += 4;
+  return rank;
+}
+
+function mergeZoneVersions(
+  current: Awaited<ReturnType<typeof fetchForestZones>>[number],
+  incoming: Awaited<ReturnType<typeof fetchForestZones>>[number]
+) {
+  const richer = zoneDetailRank(incoming) >= zoneDetailRank(current) ? incoming : current;
+  const other = richer === incoming ? current : incoming;
+  return {
+    ...other,
+    ...richer,
+    tags: { ...other.tags, ...richer.tags },
+    geometry: richer.geometry ?? other.geometry,
+    elevation: richer.elevation ?? other.elevation,
+    slope: richer.slope ?? other.slope,
+    aspect: richer.aspect ?? other.aspect,
+    soil: richer.soil ?? other.soil,
+    microclimate: richer.microclimate ?? other.microclimate
+  };
+}
+
+function mergeZoneMosaic(
+  current: Awaited<ReturnType<typeof fetchForestZones>>,
+  incoming: Awaited<ReturnType<typeof fetchForestZones>>,
+  center: LatLng
+) {
+  const byId = new Map<string, Awaited<ReturnType<typeof fetchForestZones>>[number]>();
+
+  for (const zone of current) {
+    if (distanceMeters(zone, center) <= ZONE_MOSAIC_KEEP_METERS) byId.set(zone.id, zone);
+  }
+  for (const zone of incoming) {
+    const existing = byId.get(zone.id);
+    byId.set(zone.id, existing ? mergeZoneVersions(existing, zone) : zone);
+  }
+
+  return [...byId.values()]
+    .sort((a, b) => distanceMeters(a, center) - distanceMeters(b, center))
+    .slice(0, ZONE_MOSAIC_MAX_COUNT);
 }
 
 function bearingBetween(a: LatLng, b: LatLng) {
@@ -796,7 +849,7 @@ export default function App() {
     let localWeatherCache = null as Awaited<ReturnType<typeof getCachedWeather>>;
 
     if (cached) {
-      setZones(cached.zones);
+      setZones((current) => mergeZoneMosaic(current, cached.zones, target));
       if (cached.weather && areaWeatherIsLocal) setWeather(cached.weather);
       setCacheUpdatedAt(Math.max(cached.staticUpdatedAt, areaWeatherIsLocal ? cached.weatherUpdatedAt ?? 0 : 0));
     }
@@ -841,7 +894,7 @@ export default function App() {
     const nextZones = zoneResult.status === 'fulfilled' ? zoneResult.value : cached?.zones ?? [];
     const nextWeather = weatherResult.status === 'fulfilled' ? weatherResult.value : reusableWeather ?? null;
 
-    if (nextZones.length) setZones(nextZones);
+    if (nextZones.length) setZones((current) => mergeZoneMosaic(current, nextZones, target));
     if (nextWeather) setWeather(nextWeather);
 
     if (nextZones.length && nextWeather) {
