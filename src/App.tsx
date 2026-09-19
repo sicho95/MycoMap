@@ -4,6 +4,7 @@ import * as exifr from 'exifr';
 import {
   Crosshair,
   Database,
+  Download,
   Layers3,
   LocateFixed,
   MapPin,
@@ -56,6 +57,11 @@ type ViewportBounds = {
   south: number;
   east: number;
   north: number;
+};
+
+type GpsFix = LatLng & {
+  accuracy: number;
+  heading: number | null;
 };
 
 const baseStyle: maplibregl.StyleSpecification = {
@@ -160,6 +166,54 @@ function pointInBounds(point: LatLng, bounds: ViewportBounds | null) {
   return lonInside && point.lat >= bounds.south && point.lat <= bounds.north;
 }
 
+function bearingBetween(a: LatLng, b: LatLng) {
+  const toRad = (value: number) => value * Math.PI / 180;
+  const toDeg = (value: number) => value * 180 / Math.PI;
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const y = Math.sin(dLon) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+function destinationPoint(origin: LatLng, bearing: number, distanceMetersValue: number): LatLng {
+  const radius = 6371000;
+  const angular = distanceMetersValue / radius;
+  const brng = bearing * Math.PI / 180;
+  const lat1 = origin.lat * Math.PI / 180;
+  const lon1 = origin.lon * Math.PI / 180;
+  const lat2 = Math.asin(Math.sin(lat1) * Math.cos(angular) + Math.cos(lat1) * Math.sin(angular) * Math.cos(brng));
+  const lon2 = lon1 + Math.atan2(Math.sin(brng) * Math.sin(angular) * Math.cos(lat1), Math.cos(angular) - Math.sin(lat1) * Math.sin(lat2));
+  return { lat: lat2 * 180 / Math.PI, lon: lon2 * 180 / Math.PI };
+}
+
+function headingGeojson(position: LatLng | null, heading: number | null) {
+  if (!position || heading == null || !Number.isFinite(heading)) {
+    return { type: 'FeatureCollection' as const, features: [] };
+  }
+  const left = destinationPoint(position, heading - 24, 62);
+  const front = destinationPoint(position, heading, 92);
+  const right = destinationPoint(position, heading + 24, 62);
+  return {
+    type: 'FeatureCollection' as const,
+    features: [{
+      type: 'Feature' as const,
+      geometry: {
+        type: 'Polygon' as const,
+        coordinates: [[
+          [position.lon, position.lat],
+          [left.lon, left.lat],
+          [front.lon, front.lat],
+          [right.lon, right.lat],
+          [position.lon, position.lat]
+        ]]
+      },
+      properties: {}
+    }]
+  };
+}
+
 export default function App() {
   const mapNode = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -167,6 +221,12 @@ export default function App() {
   const loadedCenterRef = useRef<LatLng>(FALLBACK);
   const observationsRef = useRef<Observation[]>([]);
   const loadRequestRef = useRef(0);
+  const gpsWatchRef = useRef<number | null>(null);
+  const gpsFirstFixRef = useRef(false);
+  const lastGpsRef = useRef<LatLng | null>(null);
+  const compassHeadingRef = useRef<number | null>(null);
+  const compassHandlerRef = useRef<((event: DeviceOrientationEvent) => void) | null>(null);
+  const userMovedMapRef = useRef(false);
 
   const [species, setSpecies] = useState<Species>('cepes');
   const [theme, setTheme] = useState<ThemeMode>(() => loadTheme());
@@ -184,6 +244,8 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [cacheUpdatedAt, setCacheUpdatedAt] = useState<number | null>(null);
+  const [gpsFix, setGpsFix] = useState<GpsFix | null>(null);
+  const [gpsTracking, setGpsTracking] = useState(false);
   const [draft, setDraft] = useState<Draft>({
     outcome: 'found', count: 1, durationMinutes: 60, observedAt: new Date(), location: null, source: 'gps'
   });
@@ -223,6 +285,11 @@ export default function App() {
     persistObservations(observations);
     observationsRef.current = observations;
   }, [observations]);
+
+  useEffect(() => () => {
+    if (gpsWatchRef.current != null) navigator.geolocation?.clearWatch(gpsWatchRef.current);
+    if (compassHandlerRef.current) window.removeEventListener('deviceorientation', compassHandlerRef.current, true);
+  }, []);
 
   useEffect(() => {
     void requestPersistentStorage();
@@ -294,6 +361,43 @@ export default function App() {
       map.addLayer({ id: 'observations', type: 'circle', source: 'observations', paint: { 'circle-radius': 6, 'circle-color': '#111814', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' } });
       map.addSource('picked', { type: 'geojson', data: pointGeojson([]) });
       map.addLayer({ id: 'picked', type: 'circle', source: 'picked', paint: { 'circle-radius': 9, 'circle-color': '#ffffff', 'circle-stroke-width': 3, 'circle-stroke-color': '#d61536' } });
+
+      map.addSource('user-heading', { type: 'geojson', data: headingGeojson(null, null) as any });
+      map.addLayer({
+        id: 'user-heading',
+        type: 'fill',
+        source: 'user-heading',
+        paint: { 'fill-color': '#1976e9', 'fill-opacity': 0.20 }
+      });
+      map.addLayer({
+        id: 'user-heading-outline',
+        type: 'line',
+        source: 'user-heading',
+        paint: { 'line-color': '#1976e9', 'line-width': 1.4, 'line-opacity': 0.58 }
+      });
+      map.addSource('user-location', { type: 'geojson', data: pointGeojson([]) });
+      map.addLayer({
+        id: 'user-location-halo',
+        type: 'circle',
+        source: 'user-location',
+        paint: {
+          'circle-radius': 14,
+          'circle-color': '#1976e9',
+          'circle-opacity': 0.18
+        }
+      });
+      map.addLayer({
+        id: 'user-location',
+        type: 'circle',
+        source: 'user-location',
+        paint: {
+          'circle-radius': 7,
+          'circle-color': '#1976e9',
+          'circle-stroke-width': 3,
+          'circle-stroke-color': '#ffffff',
+          'circle-opacity': 1
+        }
+      });
       const center = map.getCenter();
       const bounds = map.getBounds();
       setPosition({ lat: center.lat, lon: center.lng });
@@ -310,6 +414,9 @@ export default function App() {
     };
     map.on('click', 'potential-point', selectPotential);
     map.on('click', 'potential-area', selectPotential);
+    map.on('movestart', (event) => {
+      if ((event as maplibregl.MapLibreEvent & { originalEvent?: Event }).originalEvent) userMovedMapRef.current = true;
+    });
     map.on('mouseenter', 'potential-area', () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', 'potential-area', () => { map.getCanvas().style.cursor = ''; });
     map.on('click', (event) => {
@@ -345,6 +452,12 @@ export default function App() {
     if (!mapReady) return;
     (mapRef.current?.getSource('picked') as GeoJSONSource | undefined)?.setData(pointGeojson(pickedLocation ? [pickedLocation] : []));
   }, [pickedLocation, mapReady]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    (mapRef.current?.getSource('user-location') as GeoJSONSource | undefined)?.setData(pointGeojson(gpsFix ? [gpsFix] : []));
+    (mapRef.current?.getSource('user-heading') as GeoJSONSource | undefined)?.setData(headingGeojson(gpsFix, gpsFix?.heading ?? null) as any);
+  }, [gpsFix, mapReady]);
 
   async function loadArea(target: LatLng, fly = true, force = false) {
     const requestId = ++loadRequestRef.current;
@@ -440,17 +553,84 @@ export default function App() {
 
   useEffect(() => {
     navigator.geolocation?.getCurrentPosition(
-      (result) => void loadArea({ lat: result.coords.latitude, lon: result.coords.longitude }),
-      () => void loadArea(FALLBACK),
+      (result) => {
+        if (!userMovedMapRef.current) void loadArea({ lat: result.coords.latitude, lon: result.coords.longitude });
+      },
+      () => {
+        if (!userMovedMapRef.current) void loadArea(FALLBACK);
+      },
       { enableHighAccuracy: true, timeout: 9000, maximumAge: 120000 }
     );
   }, []);
 
+  function attachCompassListener() {
+    if (compassHandlerRef.current) return;
+    const handler = (event: DeviceOrientationEvent) => {
+      const iosHeading = (event as DeviceOrientationEvent & { webkitCompassHeading?: number }).webkitCompassHeading;
+      const absoluteHeading = event.absolute && event.alpha != null ? (360 - event.alpha + 360) % 360 : null;
+      const heading = Number.isFinite(iosHeading) ? Number(iosHeading) : absoluteHeading;
+      if (heading == null || !Number.isFinite(heading)) return;
+      compassHeadingRef.current = heading;
+      setGpsFix((current) => current ? { ...current, heading } : current);
+    };
+    compassHandlerRef.current = handler;
+    window.addEventListener('deviceorientation', handler, true);
+  }
+
+  async function enableCompass() {
+    const orientationApi = DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<'granted' | 'denied'> };
+    if (orientationApi.requestPermission) {
+      try {
+        if (await orientationApi.requestPermission() !== 'granted') return;
+      } catch {
+        return;
+      }
+    }
+    attachCompassListener();
+  }
+
+  function updateGpsFix(result: GeolocationPosition, recenter: boolean) {
+    const next = { lat: result.coords.latitude, lon: result.coords.longitude };
+    let heading = compassHeadingRef.current;
+    if (heading == null && result.coords.heading != null && Number.isFinite(result.coords.heading)) {
+      heading = result.coords.heading;
+    }
+    if (heading == null && lastGpsRef.current && distanceMeters(lastGpsRef.current, next) >= 3) {
+      heading = bearingBetween(lastGpsRef.current, next);
+    }
+    lastGpsRef.current = next;
+    setGpsFix({ ...next, accuracy: result.coords.accuracy, heading });
+    if (recenter) {
+      userMovedMapRef.current = false;
+      void loadArea(next, true);
+    }
+  }
+
   function locateMe() {
-    navigator.geolocation?.getCurrentPosition(
-      (result) => void loadArea({ lat: result.coords.latitude, lon: result.coords.longitude }),
-      () => setNotice('Position GPS non disponible'),
-      { enableHighAccuracy: true, timeout: 9000, maximumAge: 30000 }
+    void enableCompass();
+    if (gpsWatchRef.current != null) {
+      if (gpsFix) mapRef.current?.flyTo({ center: [gpsFix.lon, gpsFix.lat], zoom: Math.max(mapRef.current?.getZoom() ?? 15, 15), duration: 550 });
+      return;
+    }
+    if (!navigator.geolocation) {
+      setNotice('Géolocalisation non disponible sur cet appareil');
+      return;
+    }
+    setGpsTracking(true);
+    gpsFirstFixRef.current = true;
+    gpsWatchRef.current = navigator.geolocation.watchPosition(
+      (result) => {
+        const first = gpsFirstFixRef.current;
+        gpsFirstFixRef.current = false;
+        updateGpsFix(result, first);
+      },
+      () => {
+        setGpsTracking(false);
+        if (gpsWatchRef.current != null) navigator.geolocation.clearWatch(gpsWatchRef.current);
+        gpsWatchRef.current = null;
+        setNotice('Position GPS non disponible');
+      },
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 1500 }
     );
   }
 
@@ -571,6 +751,51 @@ export default function App() {
     setObservations((current) => current.filter((item) => item.id !== id));
   }
 
+  async function exportPointsJson() {
+    const exportedAt = new Date();
+    const payload = {
+      format: 'MycoMap',
+      schemaVersion: 1,
+      exportedAt: exportedAt.toISOString(),
+      pointCount: observations.length,
+      points: observations.map((item) => ({
+        ...item,
+        photo: item.photoStored ? {
+          storedLocally: true,
+          fileName: item.photoName ?? null,
+          includedInJson: false
+        } : null
+      }))
+    };
+    const json = JSON.stringify(payload, null, 2);
+    const fileName = `mycomap-points-${exportedAt.toISOString().slice(0, 10)}.json`;
+    const blob = new Blob([json], { type: 'application/json' });
+
+    try {
+      const shareFile = new File([blob], fileName, { type: 'application/json' });
+      const shareNavigator = navigator as Navigator & {
+        canShare?: (data: ShareData) => boolean;
+        share?: (data: ShareData) => Promise<void>;
+      };
+      const data: ShareData = { title: 'Sauvegarde MycoMap', files: [shareFile] };
+      if (shareNavigator.share && (!shareNavigator.canShare || shareNavigator.canShare(data))) {
+        await shareNavigator.share(data);
+        return;
+      }
+    } catch {
+      // Le téléchargement classique ci-dessous reste disponible.
+    }
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+
   const topScore = visiblePotentials.length ? Math.max(...visiblePotentials.map((item) => item.finalScore)) : null;
   const cacheLabel = cacheUpdatedAt ? formatCacheAge(cacheUpdatedAt) : null;
 
@@ -597,7 +822,7 @@ export default function App() {
       </header>
 
       <div className="map-actions">
-        <button className="map-button glass" onClick={locateMe} aria-label="Me localiser"><LocateFixed size={20} /></button>
+        <button className={`map-button glass${gpsTracking ? ' gps-active' : ''}`} onClick={locateMe} aria-label={gpsTracking ? 'Recentrer sur ma position GPS' : 'Activer ma position GPS'}><LocateFixed size={20} /></button>
         <button className="map-button glass" onClick={refreshVisibleArea} aria-label="Forcer l’actualisation"><RefreshCw className={loading ? 'spin' : ''} size={20} /></button>
       </div>
 
@@ -653,6 +878,7 @@ export default function App() {
         <section className="sheet sheet-list" aria-modal="true">
           <div className="grabber" />
           <div className="sheet-title"><div><small>Privé sur cet appareil</small><h2>Mes coins & sorties</h2></div><button className="icon-button" onClick={closeSheet}><X size={20} /></button></div>
+          <button className="secondary-button export-button" disabled={observations.length === 0} onClick={() => void exportPointsJson()}><Download size={17} /> Exporter tous les points en JSON</button>
           <div className="observations-list">
             {observations.length === 0 && <div className="empty">Aucune sortie enregistrée pour l’instant.</div>}
             {observations.map((obs) => (
