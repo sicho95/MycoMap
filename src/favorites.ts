@@ -44,6 +44,7 @@ export function favoriteFromPotential(species: Species, point: PotentialPoint): 
     forestType: point.forestType,
     essence: point.essence,
     soil: point.soil,
+    geometry: point.geometry,
     source: point.source
   };
 
