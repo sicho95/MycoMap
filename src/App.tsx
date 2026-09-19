@@ -40,6 +40,7 @@ const VIEWPORT_RELOAD_DISTANCE_METERS = 4500;
 const AREA_RADIUS_METERS = 25000;
 const DISPLAY_MIN_SCORE = 50;
 const WEATHER_REUSE_DISTANCE_METERS = 3500;
+const STATIC_REVALIDATE_DISTANCE_METERS = 7000;
 
 type Sheet = 'observation' | 'spots' | 'data' | null;
 
@@ -503,7 +504,7 @@ export default function App() {
       return;
     }
 
-    const staticFresh = !force && !!cached && isFresh(cached.staticUpdatedAt, STATIC_CACHE_MAX_AGE_MS);
+    const staticFresh = !force && !!cached && cachedDistance <= STATIC_REVALIDATE_DISTANCE_METERS && isFresh(cached.staticUpdatedAt, STATIC_CACHE_MAX_AGE_MS);
     const reusableWeather = areaWeatherIsLocal ? cached?.weather ?? null : localWeatherCache?.snapshot ?? null;
     const reusableWeatherUpdatedAt = areaWeatherIsLocal ? cached?.weatherUpdatedAt ?? null : localWeatherCache?.updatedAt ?? null;
     const weatherFresh = !force && !!reusableWeather && isFresh(reusableWeatherUpdatedAt, WEATHER_CACHE_MAX_AGE_MS);
@@ -520,7 +521,7 @@ export default function App() {
     if (requestId !== loadRequestRef.current) return;
 
     const nextZones = zoneResult.status === 'fulfilled' ? zoneResult.value : cached?.zones ?? [];
-    const nextWeather = weatherResult.status === 'fulfilled' ? weatherResult.value : cached?.weather ?? null;
+    const nextWeather = weatherResult.status === 'fulfilled' ? weatherResult.value : reusableWeather ?? null;
 
     if (nextZones.length) setZones(nextZones);
     if (nextWeather) setWeather(nextWeather);
