@@ -37,13 +37,13 @@ export default defineConfig({
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/data\.geopf\.fr\/wmts/i,
-            handler: 'StaleWhileRevalidate',
+            handler: 'CacheFirst',
             options: {
               cacheName: 'mycomap-ign-tiles-v1',
               cacheableResponse: { statuses: [0, 200] },
               expiration: {
-                maxEntries: 900,
-                maxAgeSeconds: 30 * 24 * 60 * 60,
+                maxEntries: 3000,
+                maxAgeSeconds: 90 * 24 * 60 * 60,
                 purgeOnQuotaError: true
               }
             }
