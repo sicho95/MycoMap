@@ -123,6 +123,69 @@ function normalizeGeometryForCenter(geometry: ForestGeometry, center: LatLng) {
     : { geometry, point };
 }
 
+function pointInRing(point: LatLng, ring: number[][]) {
+  let inside = false;
+  const x = point.lon;
+  const y = point.lat;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i]?.[0];
+    const yi = ring[i]?.[1];
+    const xj = ring[j]?.[0];
+    const yj = ring[j]?.[1];
+    if (![xi, yi, xj, yj].every(Number.isFinite)) continue;
+    const intersects = ((yi > y) !== (yj > y)) &&
+      (x < ((xj - xi) * (y - yi)) / ((yj - yi) || Number.EPSILON) + xi);
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function pointInGeometry(point: LatLng, geometry: ForestGeometry) {
+  if (geometry.type === 'Polygon') {
+    const [outer, ...holes] = geometry.coordinates;
+    if (!outer || !pointInRing(point, outer)) return false;
+    return !holes.some((ring) => pointInRing(point, ring));
+  }
+  return geometry.coordinates.some((polygon) => {
+    const [outer, ...holes] = polygon;
+    if (!outer || !pointInRing(point, outer)) return false;
+    return !holes.some((ring) => pointInRing(point, ring));
+  });
+}
+
+function forestZoneFromFeature(feature: any, center: LatLng): ForestZone | null {
+  const rawGeometry = toForestGeometry(feature.geometry);
+  if (!rawGeometry) return null;
+  const normalized = normalizeGeometryForCenter(rawGeometry, center);
+  if (!normalized) return null;
+  const { geometry, point } = normalized;
+  const properties = (feature.properties ?? {}) as Record<string, unknown>;
+  const forestCode = prop(properties, 'CODE_TFV');
+  const forestType = prop(properties, 'TFV', 'TFV_G11');
+  const essence = prop(properties, 'ESSENCE');
+  const id = prop(properties, 'ID') || String(feature.id ?? `${forestCode}-${point.lat}-${point.lon}`);
+  return {
+    id,
+    lat: point.lat,
+    lon: point.lon,
+    name: forestType || essence || 'Formation végétale IGN',
+    tags: {
+      code_tfv: forestCode,
+      tfv: forestType,
+      essence,
+      tfv_g11: prop(properties, 'TFV_G11')
+    },
+    geometry,
+    elevation: null,
+    slope: null,
+    aspect: null,
+    forestCode,
+    forestType,
+    essence,
+    source: 'IGN BD Forêt v2'
+  };
+}
+
 function bboxAround(center: LatLng, radiusMeters: number) {
   const latDelta = radiusMeters / 111320;
   const lonDelta = radiusMeters / (111320 * Math.max(0.2, Math.cos(center.lat * Math.PI / 180)));
@@ -245,38 +308,11 @@ export async function fetchForestZones(center: LatLng, radiusMeters = 25000): Pr
 
   const parsed = features
     .map((feature) => {
-      const rawGeometry = toForestGeometry(feature.geometry);
-      if (!rawGeometry) return null;
-      const normalized = normalizeGeometryForCenter(rawGeometry, center);
-      if (!normalized) return null;
-      const { geometry, point } = normalized;
-      if (distanceMeters(center, point) > radiusMeters * 1.18) return null;
-      const properties = (feature.properties ?? {}) as Record<string, unknown>;
-      const forestCode = prop(properties, 'CODE_TFV');
-      const forestType = prop(properties, 'TFV', 'TFV_G11');
-      const essence = prop(properties, 'ESSENCE');
-      const id = prop(properties, 'ID') || String(feature.id ?? `${forestCode}-${point.lat}-${point.lon}`);
-      return {
-        id,
-        lat: point.lat,
-        lon: point.lon,
-        name: forestType || essence || 'Formation végétale IGN',
-        tags: {
-          code_tfv: forestCode,
-          tfv: forestType,
-          essence,
-          tfv_g11: prop(properties, 'TFV_G11')
-        },
-        geometry,
-        elevation: null,
-        slope: null,
-        aspect: null,
-        forestCode,
-        forestType,
-        essence,
-        source: 'IGN BD Forêt v2' as const,
-        distance: distanceMeters(center, point)
-      };
+      const zone = forestZoneFromFeature(feature, center);
+      if (!zone) return null;
+      const distance = distanceMeters(center, zone);
+      if (distance > radiusMeters * 1.18) return null;
+      return { ...zone, distance };
     })
     .filter((item): item is NonNullable<typeof item> => item != null)
     .sort((a, b) => a.distance - b.distance)
@@ -320,4 +356,39 @@ export async function fetchForestZones(center: LatLng, radiusMeters = 25000): Pr
     if (cached) return { ...zone, ...cached };
     return freshProfiles.get(zone.id) ?? zone;
   });
+}
+
+export async function fetchForestZoneAtPoint(point: LatLng): Promise<ForestZone | null> {
+  let features: any[];
+  try {
+    // BBOX très local : on cherche uniquement la ou les géométries IGN qui coupent le sélecteur.
+    features = await fetchIgnForestFeatures(point, 220);
+  } catch {
+    throw new Error('BD Forêt IGN indisponible pour le moment');
+  }
+
+  const matching = features
+    .map((feature) => forestZoneFromFeature(feature, point))
+    .filter((zone): zone is ForestZone => zone != null && !!zone.geometry)
+    .find((zone) => zone.geometry ? pointInGeometry(point, zone.geometry) : false);
+
+  if (!matching) return null;
+
+  const cachedProfiles = await getCachedEnvironmentProfiles([matching]);
+  const cached = cachedProfiles.get(matching.id);
+  if (cached) return { ...matching, ...cached };
+
+  const terrainPoints = [
+    { lat: matching.lat, lon: matching.lon },
+    offsetPoint(matching, TERRAIN_SAMPLE_METERS, 0),
+    offsetPoint(matching, -TERRAIN_SAMPLE_METERS, 0),
+    offsetPoint(matching, 0, TERRAIN_SAMPLE_METERS),
+    offsetPoint(matching, 0, -TERRAIN_SAMPLE_METERS)
+  ];
+  const elevations = await fetchIgnElevations(terrainPoints);
+  const terrainZone = { ...matching, ...terrainFromSamples(elevations) };
+  const [enriched] = await enrichZonesWithSoil([terrainZone]);
+  const result = enriched ?? terrainZone;
+  await putCachedEnvironmentProfiles([result]);
+  return result;
 }
