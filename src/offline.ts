@@ -49,6 +49,7 @@ interface CachedEnvironmentProfile {
   slope: number | null;
   aspect: number | null;
   soil?: SoilProfile;
+  microclimate?: ForestZone['microclimate'];
   updatedAt: number;
 }
 
@@ -221,8 +222,8 @@ export async function putCachedWeather(lat: number, lon: number, date: Date, sna
   }
 }
 
-export async function getCachedEnvironmentProfiles(zones: ForestZone[]): Promise<Map<string, Pick<ForestZone, 'elevation' | 'slope' | 'aspect' | 'soil'>>> {
-  const result = new Map<string, Pick<ForestZone, 'elevation' | 'slope' | 'aspect' | 'soil'>>();
+export async function getCachedEnvironmentProfiles(zones: ForestZone[]): Promise<Map<string, Pick<ForestZone, 'elevation' | 'slope' | 'aspect' | 'soil' | 'microclimate'>>> {
+  const result = new Map<string, Pick<ForestZone, 'elevation' | 'slope' | 'aspect' | 'soil' | 'microclimate'>>();
   if (!zones.length) return result;
   const db = await openDb();
   try {
@@ -244,7 +245,8 @@ export async function getCachedEnvironmentProfiles(zones: ForestZone[]): Promise
               elevation: cached.elevation,
               slope: cached.slope,
               aspect: cached.aspect,
-              soil: cached.soil
+              soil: cached.soil,
+              microclimate: cached.microclimate
             });
           }
           pending -= 1;
@@ -274,6 +276,7 @@ export async function putCachedEnvironmentProfiles(zones: ForestZone[]): Promise
       slope: zone.slope,
       aspect: zone.aspect,
       soil: zone.soil,
+      microclimate: zone.microclimate,
       updatedAt: now
     }));
     await writeManyStore(ENVIRONMENT_STORE, values);
