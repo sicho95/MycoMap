@@ -58,6 +58,8 @@ export interface WeatherSnapshot {
   gdd84Base5?: number | null;
   soilTemp: number | null;
   soilMoisture: number | null;
+  /** Altitude du point de grille météo Open-Meteo, utilisée pour corriger le gradient thermique local. */
+  elevation?: number | null;
 }
 
 export interface ForestZone extends LatLng {
@@ -129,6 +131,8 @@ export interface PotentialPoint extends ForestZone {
   hydricScore: number;
   hydricRelativeWaterPct: number | null;
   hydricLabel: string;
+  heatLoadIndex: number | null;
+  topographicAdjustmentPct: number;
   personalCorrection: number;
   finalScore: number;
   reasons: string[];
