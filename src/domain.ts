@@ -24,6 +24,21 @@ export type SoilTextureClass =
 
 export type DrainageClass = 'très drainant' | 'drainant' | 'équilibré' | 'lent' | 'très lent' | 'inconnu';
 
+export interface TerrainMicroclimate {
+  /** Angle moyen de l'horizon topographique autour de la parcelle. */
+  horizonMeanDeg: number | null;
+  /** Horizon moyen dans les directions SE-S-SO, les plus importantes pour le soleil en France. */
+  southHorizonDeg: number | null;
+  /** Fraction de ciel géométriquement visible estimée depuis l'horizon RGE ALTI. */
+  skyViewPct: number | null;
+  /** Hauteur médiane de la végétation/sursol LiDAR sur les points > 2 m. */
+  canopyHeightM: number | null;
+  /** Proxy de fermeture de canopée : part des échantillons LiDAR dont le MNH dépasse 2 m. */
+  canopyCoverProxyPct: number | null;
+  lidarAvailable: boolean;
+  detailVersion: 1;
+}
+
 export interface SoilProfile {
   ph: number | null;
   clayPct: number | null;
@@ -74,6 +89,7 @@ export interface ForestZone extends LatLng {
   forestType?: string;
   essence?: string;
   soil?: SoilProfile;
+  microclimate?: TerrainMicroclimate;
   source: 'IGN BD Forêt v2';
 }
 
@@ -135,6 +151,7 @@ export interface PotentialPoint extends ForestZone {
   hydricLabel: string;
   heatLoadIndex: number | null;
   topographicAdjustmentPct: number;
+  structureScore: number | null;
   personalCorrection: number;
   finalScore: number;
   reasons: string[];
