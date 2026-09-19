@@ -111,18 +111,18 @@ function polygonGeojson(zones: PotentialPoint[]) {
   };
 }
 
-function favoritePointsGeojson(items: FavoriteSpot[]) {
+function favoritePointsGeojson(items: FavoriteSpot[], mode: MapMode = 'now') {
   return pointGeojson(items.map((item) => ({
     lat: item.lat,
     lon: item.lon,
     favoriteId: item.id,
     zoneId: item.zone.id,
     species: item.species,
-    lastScore: item.lastScore ?? -1
+    displayScore: mode === 'habitat' ? item.lastHabitatScore ?? -1 : item.lastScore ?? -1
   })));
 }
 
-function favoritePolygonsGeojson(items: FavoriteSpot[]) {
+function favoritePolygonsGeojson(items: FavoriteSpot[], mode: MapMode = 'now') {
   return {
     type: 'FeatureCollection' as const,
     features: items
@@ -134,7 +134,7 @@ function favoritePolygonsGeojson(items: FavoriteSpot[]) {
           favoriteId: item.id,
           zoneId: item.zone.id,
           species: item.species,
-          lastScore: item.lastScore ?? -1
+          displayScore: mode === 'habitat' ? item.lastHabitatScore ?? -1 : item.lastScore ?? -1
         }
       }))
   };
@@ -589,11 +589,11 @@ export default function App() {
         minzoom: 9,
         paint: {
           'fill-color': ['case',
-            ['>=', ['get', 'lastScore'], 50],
-            ['interpolate', ['linear'], ['get', 'lastScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
+            ['>=', ['get', 'displayScore'], 50],
+            ['interpolate', ['linear'], ['get', 'displayScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
             '#69736d'
           ],
-          'fill-opacity': ['case', ['>=', ['get', 'lastScore'], 50], 0.24, 0.12]
+          'fill-opacity': ['case', ['>=', ['get', 'displayScore'], 50], 0.24, 0.12]
         }
       });
       map.addLayer({
@@ -603,8 +603,8 @@ export default function App() {
         minzoom: 9,
         paint: {
           'line-color': ['case',
-            ['>=', ['get', 'lastScore'], 50],
-            ['interpolate', ['linear'], ['get', 'lastScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
+            ['>=', ['get', 'displayScore'], 50],
+            ['interpolate', ['linear'], ['get', 'displayScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
             '#69736d'
           ],
           'line-width': ['interpolate', ['linear'], ['zoom'], 9, 1.4, 14, 2.5],
@@ -631,8 +631,8 @@ export default function App() {
         paint: {
           'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 4.5, 9, 6, 14, 7.5],
           'circle-color': ['case',
-            ['>=', ['get', 'lastScore'], 50],
-            ['interpolate', ['linear'], ['get', 'lastScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
+            ['>=', ['get', 'displayScore'], 50],
+            ['interpolate', ['linear'], ['get', 'displayScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
             '#69736d'
           ],
           'circle-stroke-width': 1,
@@ -786,9 +786,9 @@ export default function App() {
 
   useEffect(() => {
     if (!mapReady) return;
-    (mapRef.current?.getSource('favorite-polygons') as GeoJSONSource | undefined)?.setData(favoritePolygonsGeojson(favorites) as any);
-    (mapRef.current?.getSource('favorite-points') as GeoJSONSource | undefined)?.setData(favoritePointsGeojson(favorites));
-  }, [favorites, mapReady]);
+    (mapRef.current?.getSource('favorite-polygons') as GeoJSONSource | undefined)?.setData(favoritePolygonsGeojson(favorites, mapMode) as any);
+    (mapRef.current?.getSource('favorite-points') as GeoJSONSource | undefined)?.setData(favoritePointsGeojson(favorites, mapMode));
+  }, [favorites, mapMode, mapReady]);
 
   useEffect(() => {
     if (!mapReady) return;
@@ -1070,6 +1070,7 @@ export default function App() {
       ]);
 
       if (zone) {
+        setZones((current) => mergeZoneMosaic(current, [zone], pickedLocation));
         setSelectorWeather(localWeather);
         setSelectorDataTarget(scoreZone(species, zone, localWeather, observationsRef.current));
       }
@@ -1196,6 +1197,7 @@ export default function App() {
       const zone = resolvedZone ?? item.zone;
       const scored = scoreZone(item.species, zone, snapshot, observationsRef.current);
 
+      setZones((current) => mergeZoneMosaic(current, [zone], { lat: zone.lat, lon: zone.lon }));
       setFavoriteDataTarget(scored);
       setFavoriteDataWeather(snapshot);
 
