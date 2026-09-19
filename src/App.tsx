@@ -731,8 +731,8 @@ export default function App() {
       const registration = await navigator.serviceWorker?.ready;
       if (!registration) return;
       const target = `${import.meta.env.BASE_URL}?favorite=${encodeURIComponent(item.id)}`;
-      await registration.showNotification(`MycoMap · ${SPECIES[item.species].label} : c’est le moment`, {
-        body: `${item.zone.name} passe à ${item.lastScore ?? '—'}/100 · habitat ${item.lastHabitatScore ?? '—'}/100.`,
+      await registration.showNotification(`MycoMap · ${SPECIES[item.species].label} · palier ${item.lastAlertLevel ?? 50}/100`, {
+        body: `${item.zone.name} est à ${item.lastScore ?? '—'}/100 · habitat ${item.lastHabitatScore ?? '—'}/100.`,
         tag: `mycomap-favorite-${item.id}`,
         data: { url: target, favoriteId: item.id }
       });
@@ -778,7 +778,26 @@ export default function App() {
       try {
         const snapshot = await fetchCurrentWeather(item.lat, item.lon);
         const scored = scoreZone(item.species, item.zone, snapshot, observationsRef.current);
-        const crossedThreshold = !item.alertActive && scored.finalScore >= DISPLAY_MIN_SCORE;
+        const currentLevel = scored.finalScore >= DISPLAY_MIN_SCORE
+          ? Math.floor(scored.finalScore / 5) * 5
+          : null;
+
+        let lastAlertLevel = item.lastAlertLevel;
+        let shouldNotify = false;
+
+        if (currentLevel == null) {
+          // Un passage sous 50 réarme entièrement le cycle d'alertes.
+          lastAlertLevel = null;
+        } else if (lastAlertLevel == null) {
+          // Premier franchissement de 50 après réarmement.
+          lastAlertLevel = currentLevel;
+          shouldNotify = true;
+        } else if (currentLevel >= lastAlertLevel + 5) {
+          // Un saut (ex. 53 -> 70) ne produit qu'une seule alerte, au palier atteint.
+          lastAlertLevel = currentLevel;
+          shouldNotify = true;
+        }
+
         const updated: FavoriteSpot = {
           ...item,
           lastScore: scored.finalScore,
@@ -786,10 +805,10 @@ export default function App() {
           lastConditionScore: scored.conditionScore,
           lastHydricScore: scored.hydricScore,
           lastCheckedAt: new Date().toISOString(),
-          alertActive: scored.finalScore >= DISPLAY_MIN_SCORE
+          lastAlertLevel
         };
         next.push(updated);
-        if (crossedThreshold) notifications.push(updated);
+        if (shouldNotify) notifications.push(updated);
       } catch {
         next.push(item);
       }
@@ -1076,7 +1095,7 @@ export default function App() {
           <div className="sheet-title"><div><small>Privé sur cet appareil</small><h2>Mes coins & sorties</h2></div><button className="icon-button" onClick={closeSheet}><X size={20} /></button></div>
           <button className="secondary-button export-button" disabled={observations.length === 0 && favorites.length === 0} onClick={() => void exportPointsJson()}><Download size={17} /> Exporter points & favoris en JSON</button>
           <div className="favorites-block">
-            <div className="list-heading"><div><b>Favoris surveillés</b><span>Mise à jour au lancement et au retour dans l’app · alerte à partir de 50/100</span></div><Bell size={17} /></div>
+            <div className="list-heading"><div><b>Favoris surveillés</b><span>Alerte à 50/100 puis par paliers de +5 · retour sous 50 = réarmement</span></div><Bell size={17} /></div>
             {favorites.length === 0 && <div className="empty compact">Aucun coin surveillé. Sélectionne une parcelle puis touche l’étoile.</div>}
             {favorites
               .slice()
@@ -1084,7 +1103,7 @@ export default function App() {
               .map((favorite) => (
                 <article className="favorite-row" key={favorite.id} onClick={() => void focusFavorite(favorite)}>
                   <div className="favorite-score" style={{ color: favorite.lastScore == null ? 'var(--muted)' : scoreColor(favorite.lastScore) }}>{favorite.lastScore ?? '—'}</div>
-                  <div><b><SpeciesIcon species={favorite.species} size={17} /> {favorite.zone.name}</b><span>Coin {favorite.lastHabitatScore ?? '—'}/100 · maintenant {favorite.lastScore ?? '—'}/100 · moment {favorite.lastConditionScore ?? '—'}/100</span><small>{favorite.lastCheckedAt ? `Vérifié ${new Date(favorite.lastCheckedAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}` : 'Pas encore vérifié'}</small></div>
+                  <div><b><SpeciesIcon species={favorite.species} size={17} /> {favorite.zone.name}</b><span>Coin {favorite.lastHabitatScore ?? '—'}/100 · maintenant {favorite.lastScore ?? '—'}/100 · moment {favorite.lastConditionScore ?? '—'}/100</span><small>Prochaine alerte : {favorite.lastAlertLevel == null ? '50' : favorite.lastAlertLevel + 5}/100 · {favorite.lastCheckedAt ? `vérifié ${new Date(favorite.lastCheckedAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}` : 'pas encore vérifié'}</small></div>
                   <button className="delete favorite-delete" onClick={(event) => { event.stopPropagation(); setFavorites((current) => current.filter((item) => item.id !== favorite.id)); }} aria-label="Retirer des favoris"><Star size={17} fill="currentColor" /></button>
                 </article>
               ))}
