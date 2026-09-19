@@ -6,9 +6,14 @@ const IGN_WFS = 'https://data.geopf.fr/wfs/ows';
 const IGN_ALTI = 'https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json';
 const FOREST_LAYER = 'LANDCOVER.FORESTINVENTORY.V2:formation_vegetale';
 const ALTI_RESOURCE = 'ign_rge_alti_wld';
+const LIDAR_MNX_RESOURCE = 'ign_lidar_hd_mnx_multi_wld';
 const MAX_WFS_FEATURES = 1800;
 const MAX_ANALYSED_ZONES = 280;
 const TERRAIN_SAMPLE_METERS = 80;
+const MICROCLIMATE_DETAIL_ZONES = 24;
+const HORIZON_AZIMUTHS = [0, 45, 90, 135, 180, 225, 270, 315] as const;
+const HORIZON_DISTANCES = [250, 750] as const;
+const CANOPY_SAMPLE_RADIUS_METERS = 35;
 
 type WfsVariant = {
   srsName: string;
@@ -258,10 +263,19 @@ function offsetPoint(point: LatLng, northMeters: number, eastMeters: number): La
   return { lat, lon };
 }
 
+function offsetBearing(point: LatLng, distanceMetersValue: number, azimuthDeg: number): LatLng {
+  const azimuth = azimuthDeg * Math.PI / 180;
+  return offsetPoint(
+    point,
+    Math.cos(azimuth) * distanceMetersValue,
+    Math.sin(azimuth) * distanceMetersValue
+  );
+}
+
 async function fetchIgnElevations(points: LatLng[]) {
   const result: Array<number | null> = [];
-  for (let offset = 0; offset < points.length; offset += 70) {
-    const chunk = points.slice(offset, offset + 70);
+  for (let offset = 0; offset < points.length; offset += 120) {
+    const chunk = points.slice(offset, offset + 120);
     const params = new URLSearchParams({
       lon: chunk.map((point) => point.lon.toFixed(6)).join('|'),
       lat: chunk.map((point) => point.lat.toFixed(6)).join('|'),
@@ -296,6 +310,143 @@ function terrainFromSamples(samples: Array<number | null>) {
   if (slope < 1.2) return { elevation: center ?? null, slope, aspect: null };
   const aspect = (Math.atan2(-dzdx, -dzdy) * 180 / Math.PI + 360) % 360;
   return { elevation: center ?? null, slope, aspect };
+}
+
+async function fetchLidarHeights(points: LatLng[]) {
+  const result: Array<number | null> = [];
+  for (let offset = 0; offset < points.length; offset += 120) {
+    const chunk = points.slice(offset, offset + 120);
+    const params = new URLSearchParams({
+      lon: chunk.map((point) => point.lon.toFixed(6)).join('|'),
+      lat: chunk.map((point) => point.lat.toFixed(6)).join('|'),
+      resource: LIDAR_MNX_RESOURCE,
+      delimiter: '|',
+      indent: 'false',
+      measures: 'true',
+      zonly: 'false'
+    });
+    try {
+      const payload = await fetchJson(`${IGN_ALTI}?${params}`, 18000);
+      const values = Array.isArray(payload?.elevations) ? payload.elevations : [];
+      for (let index = 0; index < chunk.length; index += 1) {
+        const measures = Array.isArray(values[index]?.measures) ? values[index].measures : [];
+        const byTitle = (token: string) => {
+          const measure = measures.find((item: any) => String(item?.title ?? '').toUpperCase().includes(token));
+          const value = Number(measure?.z);
+          return Number.isFinite(value) && value > -90000 ? value : null;
+        };
+        const directHeight = byTitle('MNH');
+        const mns = byTitle('MNS');
+        const mnt = byTitle('MNT');
+        const height = directHeight ?? (mns != null && mnt != null ? mns - mnt : null);
+        result.push(height != null && Number.isFinite(height) && height >= -0.5 && height <= 90 ? Math.max(0, height) : null);
+      }
+    } catch {
+      result.push(...chunk.map(() => null));
+    }
+  }
+  return result;
+}
+
+function horizonProfile(zone: ForestZone, samples: Array<number | null>) {
+  if (zone.elevation == null) {
+    return { horizonMeanDeg: null, southHorizonDeg: null, skyViewPct: null };
+  }
+
+  const directionAngles: Array<{ azimuth: number; angle: number }> = [];
+  let cursor = 0;
+  for (const azimuth of HORIZON_AZIMUTHS) {
+    let maxAngle = 0;
+    let valid = false;
+    for (const distance of HORIZON_DISTANCES) {
+      const z = samples[cursor];
+      cursor += 1;
+      if (z == null) continue;
+      valid = true;
+      const angle = Math.atan2(z - zone.elevation, distance) * 180 / Math.PI;
+      maxAngle = Math.max(maxAngle, angle);
+    }
+    if (valid) directionAngles.push({ azimuth, angle: Math.max(0, maxAngle) });
+  }
+
+  if (directionAngles.length < 4) {
+    return { horizonMeanDeg: null, southHorizonDeg: null, skyViewPct: null };
+  }
+
+  const horizonMeanDeg = directionAngles.reduce((sum, item) => sum + item.angle, 0) / directionAngles.length;
+  const southern = directionAngles.filter((item) => item.azimuth === 135 || item.azimuth === 180 || item.azimuth === 225);
+  const southHorizonDeg = southern.length
+    ? southern.reduce((sum, item) => sum + item.angle, 0) / southern.length
+    : null;
+
+  // Approximation isotrope du facteur de vue du ciel : horizon bas = ciel largement visible.
+  const skyView = directionAngles.reduce((sum, item) => {
+    const angleRad = item.angle * Math.PI / 180;
+    return sum + Math.cos(angleRad) ** 2;
+  }, 0) / directionAngles.length;
+
+  return {
+    horizonMeanDeg: Math.round(horizonMeanDeg * 10) / 10,
+    southHorizonDeg: southHorizonDeg == null ? null : Math.round(southHorizonDeg * 10) / 10,
+    skyViewPct: Math.round(Math.min(1, Math.max(0, skyView)) * 100)
+  };
+}
+
+function canopyProfile(samples: Array<number | null>) {
+  const valid = samples.filter((value): value is number => value != null && Number.isFinite(value));
+  if (valid.length < 3) {
+    return { canopyHeightM: null, canopyCoverProxyPct: null, lidarAvailable: false };
+  }
+
+  const vegetation = valid.filter((value) => value >= 2);
+  const sorted = [...vegetation].sort((a, b) => a - b);
+  const median = sorted.length
+    ? sorted.length % 2
+      ? sorted[Math.floor(sorted.length / 2)]
+      : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
+    : null;
+
+  return {
+    canopyHeightM: median == null ? null : Math.round(median * 10) / 10,
+    canopyCoverProxyPct: Math.round((vegetation.length / valid.length) * 100),
+    lidarAvailable: true
+  };
+}
+
+async function enrichDetailedMicroclimate(zones: ForestZone[]) {
+  const targets = zones.filter((zone) => zone.microclimate?.detailVersion !== 1);
+  if (!targets.length) return zones;
+
+  const horizonPoints = targets.flatMap((zone) =>
+    HORIZON_AZIMUTHS.flatMap((azimuth) =>
+      HORIZON_DISTANCES.map((distance) => offsetBearing(zone, distance, azimuth))
+    )
+  );
+  const horizonElevations = await fetchIgnElevations(horizonPoints);
+
+  const canopyPoints = targets.flatMap((zone) => [
+    { lat: zone.lat, lon: zone.lon },
+    ...HORIZON_AZIMUTHS.map((azimuth) => offsetBearing(zone, CANOPY_SAMPLE_RADIUS_METERS, azimuth))
+  ]);
+  const canopyHeights = await fetchLidarHeights(canopyPoints);
+
+  const detailed = new Map<string, ForestZone>();
+  targets.forEach((zone, index) => {
+    const horizonSize = HORIZON_AZIMUTHS.length * HORIZON_DISTANCES.length;
+    const canopySize = HORIZON_AZIMUTHS.length + 1;
+    const horizon = horizonProfile(zone, horizonElevations.slice(index * horizonSize, (index + 1) * horizonSize));
+    const canopy = canopyProfile(canopyHeights.slice(index * canopySize, (index + 1) * canopySize));
+    detailed.set(zone.id, {
+      ...zone,
+      microclimate: {
+        ...horizon,
+        ...canopy,
+        detailVersion: 1
+      }
+    });
+  });
+
+  return zones.map((zone) => detailed.get(zone.id) ?? zone);
 }
 
 export async function fetchForestZones(center: LatLng, radiusMeters = 25000): Promise<ForestZone[]> {
@@ -351,11 +502,21 @@ export async function fetchForestZones(center: LatLng, radiusMeters = 25000): Pr
     freshProfiles = new Map(enriched.map((zone) => [zone.id, zone] as const));
   }
 
-  return cleanParsed.map((zone) => {
+  const baseZones = cleanParsed.map((zone) => {
     const cached = cachedProfiles.get(zone.id);
     if (cached) return { ...zone, ...cached };
     return freshProfiles.get(zone.id) ?? zone;
   });
+
+  // Le détail RGE ALTI horizon + LiDAR HD est volontairement calculé sur les parcelles
+  // les plus proches. Il est ensuite conservé plusieurs mois en IndexedDB ; en se déplaçant,
+  // les nouvelles parcelles proches sont enrichies à leur tour sans bloquer toute la France.
+  const detailSlice = baseZones.slice(0, MICROCLIMATE_DETAIL_ZONES);
+  const detailedSlice = await enrichDetailedMicroclimate(detailSlice);
+  await putCachedEnvironmentProfiles(detailedSlice);
+  const detailedMap = new Map(detailedSlice.map((zone) => [zone.id, zone] as const));
+
+  return baseZones.map((zone) => detailedMap.get(zone.id) ?? zone);
 }
 
 export async function fetchForestZoneAtPoint(point: LatLng): Promise<ForestZone | null> {
@@ -376,19 +537,25 @@ export async function fetchForestZoneAtPoint(point: LatLng): Promise<ForestZone 
 
   const cachedProfiles = await getCachedEnvironmentProfiles([matching]);
   const cached = cachedProfiles.get(matching.id);
-  if (cached) return { ...matching, ...cached };
+  let base: ForestZone;
 
-  const terrainPoints = [
-    { lat: matching.lat, lon: matching.lon },
-    offsetPoint(matching, TERRAIN_SAMPLE_METERS, 0),
-    offsetPoint(matching, -TERRAIN_SAMPLE_METERS, 0),
-    offsetPoint(matching, 0, TERRAIN_SAMPLE_METERS),
-    offsetPoint(matching, 0, -TERRAIN_SAMPLE_METERS)
-  ];
-  const elevations = await fetchIgnElevations(terrainPoints);
-  const terrainZone = { ...matching, ...terrainFromSamples(elevations) };
-  const [enriched] = await enrichZonesWithSoil([terrainZone]);
-  const result = enriched ?? terrainZone;
+  if (cached) {
+    base = { ...matching, ...cached };
+  } else {
+    const terrainPoints = [
+      { lat: matching.lat, lon: matching.lon },
+      offsetPoint(matching, TERRAIN_SAMPLE_METERS, 0),
+      offsetPoint(matching, -TERRAIN_SAMPLE_METERS, 0),
+      offsetPoint(matching, 0, TERRAIN_SAMPLE_METERS),
+      offsetPoint(matching, 0, -TERRAIN_SAMPLE_METERS)
+    ];
+    const elevations = await fetchIgnElevations(terrainPoints);
+    const terrainZone = { ...matching, ...terrainFromSamples(elevations) };
+    const [enriched] = await enrichZonesWithSoil([terrainZone]);
+    base = enriched ?? terrainZone;
+  }
+
+  const [result] = await enrichDetailedMicroclimate([base]);
   await putCachedEnvironmentProfiles([result]);
   return result;
 }
