@@ -32,6 +32,7 @@ export default defineConfig({
         cleanupOutdatedCaches: true,
         clientsClaim: true,
         skipWaiting: true,
+        importScripts: [`${base}notification-sw.js`],
         navigateFallback: `${base}index.html`,
         globIgnores: ['**/version.json'],
         runtimeCaching: [
