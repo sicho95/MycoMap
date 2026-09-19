@@ -103,6 +103,8 @@ export interface Observation extends LatLng {
     hydricScore: number;
     hydricRelativeWaterPct: number | null;
     hydricLabel: string;
+    heatLoadIndex?: number | null;
+    topographicAdjustmentPct?: number;
     capturedAt: string;
   };
 }
