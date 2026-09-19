@@ -653,7 +653,7 @@ export default function App() {
   useEffect(() => {
     if (!mapReady) return;
     (mapRef.current?.getSource('selected-favorite-polygon') as GeoJSONSource | undefined)?.setData(selectedFavoritePolygonGeojson(selectedFavorite) as any);
-    (mapRef.current?.getSource('selected-favorite-point') as GeoJSONSource | undefined)?.setData(pointGeojson(selectedFavorite ? [selectedFavorite] : []));
+    (mapRef.current?.getSource('selected-favorite-point') as GeoJSONSource | undefined)?.setData(pointGeojson(selectedFavorite ? [{ lat: selectedFavorite.lat, lon: selectedFavorite.lon }] : []));
   }, [selectedFavorite, mapReady]);
 
   useEffect(() => {
@@ -950,7 +950,10 @@ export default function App() {
     setMapMode('now');
     setSheet(null);
     setPickedLocation(null);
-    await loadArea({ lat: item.lat, lon: item.lon }, true);
+    setSelectedFavoriteId(item.id);
+    mapRef.current?.flyTo({ center: [item.lon, item.lat], zoom: 13.2, duration: 700 });
+    await loadArea({ lat: item.lat, lon: item.lon }, false);
+    setSelectedFavoriteId(item.id);
     setSelectedId(item.zone.id);
   }
 
@@ -1208,14 +1211,14 @@ export default function App() {
         </div>
         <div className="species-control glass" role="tablist" aria-label="Champignon recherché">
           {(Object.keys(SPECIES) as Species[]).map((key) => (
-            <button key={key} className={species === key ? 'active' : ''} onClick={() => { setSpecies(key); setSelectedId(null); }} role="tab">
+            <button key={key} className={species === key ? 'active' : ''} onClick={() => { setSpecies(key); setSelectedId(null); setSelectedFavoriteId(null); }} role="tab">
               <SpeciesIcon species={key} />{SPECIES[key].label}
             </button>
           ))}
         </div>
         <div className="view-control glass" role="tablist" aria-label="Type de potentiel">
-          <button className={mapMode === 'now' ? 'active' : ''} onClick={() => { setMapMode('now'); setSelectedId(null); }}>Maintenant</button>
-          <button className={mapMode === 'habitat' ? 'active' : ''} onClick={() => { setMapMode('habitat'); setSelectedId(null); }}>Qualité du coin</button>
+          <button className={mapMode === 'now' ? 'active' : ''} onClick={() => { setMapMode('now'); setSelectedId(null); setSelectedFavoriteId(null); }}>Maintenant</button>
+          <button className={mapMode === 'habitat' ? 'active' : ''} onClick={() => { setMapMode('habitat'); setSelectedId(null); setSelectedFavoriteId(null); }}>Qualité du coin</button>
         </div>
         <div className="legend glass" aria-label={`Légende ${mapMode === 'now' ? 'du potentiel actuel' : 'de la qualité du coin'} de 50 à 100`}>
           <span><i className="dot blue" />50</span><span><i className="dot green" /></span><span><i className="dot yellow" /></span><span><i className="dot orange" /></span><span><i className="dot red" />100</span>
@@ -1238,7 +1241,7 @@ export default function App() {
 
       {selected && !sheet && selectedDisplayScore != null && (
         <section className="zone-card glass" onClick={() => setSheet('data')} role="button" aria-label="Ouvrir le détail de cette parcelle">
-          <button className="close-mini" onClick={(event) => { event.stopPropagation(); setSelectedId(null); }}><X size={16} /></button>
+          <button className="close-mini" onClick={(event) => { event.stopPropagation(); setSelectedId(null); setSelectedFavoriteId(null); }}><X size={16} /></button>
           <button className={`favorite-mini${isFavorite(selected) ? ' active' : ''}`} onClick={(event) => { event.stopPropagation(); void toggleFavorite(selected); }} aria-label={isFavorite(selected) ? 'Retirer des favoris' : 'Surveiller ce coin'}><Star size={16} fill={isFavorite(selected) ? 'currentColor' : 'none'} /></button>
           <div className="zone-score" style={{ color: scoreColor(selectedDisplayScore) }}>{selectedDisplayScore}</div>
           <div className="zone-copy"><b>{mapMode === 'habitat' ? 'Qualité du coin' : scoreLabel(selected.finalScore)}</b><span>{selected.name}</span><small>Coin {selected.habitatScore}/100 · Maintenant {selected.finalScore}/100 · Moment {selected.conditionScore}/100</small></div>
