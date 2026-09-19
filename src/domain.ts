@@ -115,7 +115,8 @@ export interface FavoriteSpot extends LatLng {
   lastConditionScore: number | null;
   lastHydricScore: number | null;
   lastCheckedAt: string | null;
-  alertActive: boolean;
+  /** Plus haut palier de 5 déjà notifié depuis le dernier passage sous 50. */
+  lastAlertLevel: number | null;
 }
 
 export interface PotentialPoint extends ForestZone {
