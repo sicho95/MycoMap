@@ -21,22 +21,21 @@ export function persistFavorites(items: FavoriteSpot[]) {
 }
 
 export function favoriteFromPotential(species: Species, point: PotentialPoint): FavoriteSpot {
-  const {
-    geometry: _geometry,
-    forestScore: _forestScore,
-    terrainScore: _terrainScore,
-    soilScore: _soilScore,
-    habitatScore: _habitatScore,
-    seasonScore: _seasonScore,
-    conditionScore: _conditionScore,
-    hydricScore: _hydricScore,
-    hydricRelativeWaterPct: _hydricRelativeWaterPct,
-    hydricLabel: _hydricLabel,
-    personalCorrection: _personalCorrection,
-    finalScore: _finalScore,
-    reasons: _reasons,
-    ...zone
-  } = point;
+  const zone = {
+    id: point.id,
+    name: point.name,
+    tags: point.tags,
+    lat: point.lat,
+    lon: point.lon,
+    elevation: point.elevation,
+    slope: point.slope,
+    aspect: point.aspect,
+    forestCode: point.forestCode,
+    forestType: point.forestType,
+    essence: point.essence,
+    soil: point.soil,
+    source: point.source
+  };
 
   return {
     id: favoriteId(species, point.id),
