@@ -31,7 +31,7 @@ import {
   storeObservationPhoto,
   WEATHER_CACHE_MAX_AGE_MS
 } from './offline';
-import { distanceMeters, scoreColor, scoreConditions, scoreLabel, scoreMoment, scoreZone } from './scoring';
+import { distanceMeters, scoreColor, scoreLabel, scoreMoment, scoreZone } from './scoring';
 import { fetchCurrentWeather, fetchWeatherForDate } from './weather';
 
 const FALLBACK: LatLng = { lat: 48.78, lon: 2.26 };
