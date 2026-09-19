@@ -108,7 +108,7 @@ export interface Observation extends LatLng {
 export interface FavoriteSpot extends LatLng {
   id: string;
   species: Species;
-  zone: Omit<ForestZone, 'geometry'>;
+  zone: ForestZone;
   createdAt: string;
   lastScore: number | null;
   lastHabitatScore: number | null;
