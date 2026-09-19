@@ -69,6 +69,30 @@ Les catégories de l'application sont volontairement larges :
 - Mihail et al. (2007), *Mycological Research* 111(3), « Spatial and temporal patterns of morel fruiting », DOI: 10.1016/j.mycres.2007.01.007. Suivi de cinq ans : pluie >10 mm/30 j, températures printanières air/sol, réchauffement du sol et associations de végétation.
 - « Ecological characterization of Morel (Morchella spp.) habitats: A multivariate comparison from three forest types of district Swat, Pakistan » (2020) : sols sablo-limoneux à limoneux, pH moyen ~6,4, forte influence du contexte forestier. Utilisé comme préférence souple, pas comme seuil universel.
 
+## Relief, horizon topographique et canopée LiDAR
+
+### Pourquoi ces variables sont utilisées
+
+- **Pente + exposition** ne sont pas interprétées comme une règle fixe « nord bon / sud mauvais ». MycoMap calcule une charge thermique potentielle à partir de la latitude, de la pente et de l'exposition, d'après McCune & Keon (2002). Cette charge sert ensuite de modulateur du microclimat : un versant chaud est davantage pénalisé lorsqu'il fait déjà chaud/sec, tandis qu'un versant plus frais peut mieux conserver l'humidité.
+- **Horizon topographique** : le RGE ALTI est échantillonné autour de la parcelle dans huit directions. L'application estime l'angle moyen de l'horizon, l'horizon sud (SE–S–SO) et une approximation de la fraction de ciel visible. Un relief qui masque une partie du ciel/du soleil peut limiter la charge thermique et l'évaporation. L'effet reste dynamique : protecteur en période chaude/sèche, mais potentiellement défavorable au réchauffement printanier des morilles.
+- **Canopée LiDAR HD** : lorsque la ressource IGN est disponible, MycoMap interroge les MNT/MNS LiDAR HD autour du centre de la parcelle. La différence MNS–MNT donne un modèle numérique de hauteur. Plusieurs points voisins permettent d'estimer une hauteur médiane de canopée et un **proxy de fermeture** (part des échantillons >2 m). Ce proxy n'est pas une mesure directe de surface terrière, de LAI ou de densité de tiges.
+- **Altitude** : elle ne reçoit pas un bonus fixe. Elle sert surtout à corriger légèrement la température de la maille météo en fonction du dénivelé local, via un gradient atmosphérique standard plafonné pour ne pas sur-interpréter la donnée.
+
+### Poids volontairement limités
+
+La structure forestière est scientifiquement pertinente, mais les relations publiées ne sont pas universelles. Pour *Boletus edulis*, plusieurs travaux montrent un effet important de la surface terrière, de l'âge et de la structure du peuplement, avec des optima différents selon régions et essences. Le LiDAR fournit ici des **proxys** ; il ne faut donc pas transformer une hauteur de canopée en règle absolue.
+
+Pour les girolles, des travaux canadiens décrivent des peuplements surtout âgés de 41–60 ans avec couvert modérément ouvert. Pour les morilles, une étude de terrain rapporte une couverture de canopée moyenne d'environ 57 % dans les habitats productifs, mais le genre *Morchella* comprend aussi des écologies ouvertes, perturbées ou de brûlis. Le poids de la canopée est donc encore plus faible pour les morilles.
+
+### Références
+
+- McCune, B. & Keon, D. (2002), *Journal of Vegetation Science* 13:603–606, « Equations for potential annual direct incident radiation and heat load », DOI: 10.1111/j.1654-1103.2002.tb02087.x.
+- Martínez-Peña et al. (2012), *Forest Ecology and Management*, modèles de rendement de champignons ectomycorhiziens en pinède de *Pinus sylvestris* : pluie/température et structure de peuplement, surface terrière particulièrement importante pour *B. edulis*.
+- Bonet et al. / modèles forestiers ultérieurs : la surface terrière optimale pour les champignons comestibles varie selon les peuplements et les régions ; ces résultats justifient un poids souple plutôt qu'un seuil universel.
+- « Characterization of chanterelle (*Cantharellus cibarius*) and pine mushrooms in northern Saskatchewan » : chanterelles principalement dans des peuplements de pin gris de 41–60 ans à couvert modérément ouvert.
+- « Ecological characterization of Morel (*Morchella* spp.) habitats » (2020) : couverture de canopée moyenne d'environ 57 %, expositions N/NW fréquentes dans les placettes étudiées et rôle de l'humidité ; résultats utilisés comme tendance locale, pas comme règle universelle.
+- IGN LiDAR HD : MNT, MNS et MNH issus d'acquisitions haute densité ; les services altimétriques peuvent renvoyer plusieurs mesures MNT/MNS pour un même point. MycoMap utilise le LiDAR seulement lorsqu'il est disponible et conserve un fallback neutre ailleurs.
+
 ## Ce que le modèle refuse de faire
 
 - Convertir l'indice 0–100 en « 80 % de chance de trouver ».
@@ -80,7 +104,8 @@ Les catégories de l'application sont volontairement larges :
 ## Données cartographiques utilisées
 
 - IGN BD Forêt v2 : formation forestière / essence quand disponible.
-- IGN RGE ALTI : altitude, pente, exposition.
+- IGN RGE ALTI : altitude, pente, exposition et horizon topographique local.
+- IGN LiDAR HD : MNT/MNS et hauteur de canopée/proxy de fermeture lorsqu'ils sont disponibles.
 - SoilGrids 2.0 / ISRIC : pH, texture et propriétés hydriques à résolution ~250 m ; ce sont des prédictions spatiales et non des analyses de sol sur place.
 - Open-Meteo : séries de pluie, températures et humidité/température du sol utilisées pour les fenêtres temporelles.
 
