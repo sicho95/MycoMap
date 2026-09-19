@@ -947,6 +947,8 @@ export default function App() {
       schemaVersion: 1,
       exportedAt: exportedAt.toISOString(),
       pointCount: observations.length,
+      favoriteCount: favorites.length,
+      favorites,
       points: observations.map((item) => ({
         ...item,
         photo: item.photoStored ? {
@@ -1005,7 +1007,11 @@ export default function App() {
             </button>
           ))}
         </div>
-        <div className="legend glass" aria-label="Légende du potentiel affiché de 50 à 100">
+        <div className="view-control glass" role="tablist" aria-label="Type de potentiel">
+          <button className={mapMode === 'now' ? 'active' : ''} onClick={() => { setMapMode('now'); setSelectedId(null); }}>Maintenant</button>
+          <button className={mapMode === 'habitat' ? 'active' : ''} onClick={() => { setMapMode('habitat'); setSelectedId(null); }}>Qualité du coin</button>
+        </div>
+        <div className="legend glass" aria-label={`Légende ${mapMode === 'now' ? 'du potentiel actuel' : 'de la qualité du coin'} de 50 à 100`}>
           <span><i className="dot blue" />50</span><span><i className="dot green" /></span><span><i className="dot yellow" /></span><span><i className="dot orange" /></span><span><i className="dot red" />100</span>
         </div>
       </header>
@@ -1019,16 +1025,17 @@ export default function App() {
         <div className="status-pill glass">
           <span className="status-dot" style={{ background: topScore != null ? scoreColor(topScore) : '#8b968f' }} />
           {topScore == null
-            ? (loading ? 'Analyse de cette zone…' : 'Aucun secteur ≥ 50/100')
-            : <>{!isOnline ? 'Hors ligne · écran' : loading ? 'Actualisation · écran' : 'Meilleur secteur visible'} : <b>{topScore}/100</b></>}
+            ? (loading ? 'Analyse de cette zone…' : mapMode === 'now' ? 'Aucun secteur actuel ≥ 50/100' : 'Aucun habitat ≥ 50/100')
+            : <>{!isOnline ? 'Hors ligne · ' : loading ? 'Actualisation · ' : ''}{mapMode === 'now' ? 'Meilleur potentiel actuel' : 'Meilleur habitat visible'} : <b>{topScore}/100</b></>}
         </div>
       )}
 
-      {selected && !sheet && (
+      {selected && !sheet && selectedDisplayScore != null && (
         <section className="zone-card glass" onClick={() => setSheet('data')} role="button" aria-label="Ouvrir le détail de cette parcelle">
           <button className="close-mini" onClick={(event) => { event.stopPropagation(); setSelectedId(null); }}><X size={16} /></button>
-          <div className="zone-score" style={{ color: scoreColor(selected.finalScore) }}>{selected.finalScore}</div>
-          <div className="zone-copy"><b>{scoreLabel(selected.finalScore)}</b><span>{selected.name}</span><small>{selected.reasons.join(' · ')}</small></div>
+          <button className={`favorite-mini${isFavorite(selected) ? ' active' : ''}`} onClick={(event) => { event.stopPropagation(); void toggleFavorite(selected); }} aria-label={isFavorite(selected) ? 'Retirer des favoris' : 'Surveiller ce coin'}><Star size={16} fill={isFavorite(selected) ? 'currentColor' : 'none'} /></button>
+          <div className="zone-score" style={{ color: scoreColor(selectedDisplayScore) }}>{selectedDisplayScore}</div>
+          <div className="zone-copy"><b>{mapMode === 'habitat' ? 'Qualité du coin' : scoreLabel(selected.finalScore)}</b><span>{selected.name}</span><small>Coin {selected.habitatScore}/100 · Maintenant {selected.finalScore}/100 · Moment {selected.conditionScore}/100</small></div>
         </section>
       )}
 
@@ -1067,7 +1074,22 @@ export default function App() {
         <section className="sheet sheet-list" aria-modal="true">
           <div className="grabber" />
           <div className="sheet-title"><div><small>Privé sur cet appareil</small><h2>Mes coins & sorties</h2></div><button className="icon-button" onClick={closeSheet}><X size={20} /></button></div>
-          <button className="secondary-button export-button" disabled={observations.length === 0} onClick={() => void exportPointsJson()}><Download size={17} /> Exporter tous les points en JSON</button>
+          <button className="secondary-button export-button" disabled={observations.length === 0 && favorites.length === 0} onClick={() => void exportPointsJson()}><Download size={17} /> Exporter points & favoris en JSON</button>
+          <div className="favorites-block">
+            <div className="list-heading"><div><b>Favoris surveillés</b><span>Mise à jour au lancement et au retour dans l’app · alerte à partir de 50/100</span></div><Bell size={17} /></div>
+            {favorites.length === 0 && <div className="empty compact">Aucun coin surveillé. Sélectionne une parcelle puis touche l’étoile.</div>}
+            {favorites
+              .slice()
+              .sort((a, b) => (b.lastScore ?? -1) - (a.lastScore ?? -1))
+              .map((favorite) => (
+                <article className="favorite-row" key={favorite.id} onClick={() => void focusFavorite(favorite)}>
+                  <div className="favorite-score" style={{ color: favorite.lastScore == null ? 'var(--muted)' : scoreColor(favorite.lastScore) }}>{favorite.lastScore ?? '—'}</div>
+                  <div><b><SpeciesIcon species={favorite.species} size={17} /> {favorite.zone.name}</b><span>Coin {favorite.lastHabitatScore ?? '—'}/100 · maintenant {favorite.lastScore ?? '—'}/100 · moment {favorite.lastConditionScore ?? '—'}/100</span><small>{favorite.lastCheckedAt ? `Vérifié ${new Date(favorite.lastCheckedAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}` : 'Pas encore vérifié'}</small></div>
+                  <button className="delete favorite-delete" onClick={(event) => { event.stopPropagation(); setFavorites((current) => current.filter((item) => item.id !== favorite.id)); }} aria-label="Retirer des favoris"><Star size={17} fill="currentColor" /></button>
+                </article>
+              ))}
+          </div>
+          <div className="list-heading observations-heading"><div><b>Historique des sorties</b><span>Chaque observation reste associée à son espèce.</span></div></div>
           <div className="observations-list">
             {observations.length === 0 && <div className="empty">Aucune sortie enregistrée pour l’instant.</div>}
             {observations.map((obs) => (
@@ -1089,7 +1111,7 @@ export default function App() {
             <div className="empty">{loading ? 'Analyse de la zone en cours…' : !isOnline ? 'Zone non disponible dans le cache hors ligne.' : 'Aucune parcelle analysée disponible ici pour le moment.'}</div>
           ) : (
             <>
-              <div className="data-summary"><div className="data-total" style={{ color: scoreColor(dataTarget.finalScore) }}>{dataTarget.finalScore}</div><div><b>{scoreLabel(dataTarget.finalScore)}</b><span>{dataTarget.name}</span><small>{dataTarget.lat.toFixed(5)}, {dataTarget.lon.toFixed(5)}</small></div></div>
+              <div className="data-summary"><div className="data-total" style={{ color: scoreColor(dataTarget.finalScore) }}>{dataTarget.finalScore}</div><div><b>{scoreLabel(dataTarget.finalScore)}</b><span>{dataTarget.name}</span><small>Qualité du coin {dataTarget.habitatScore}/100 · moment {dataTarget.conditionScore}/100</small><small>{dataTarget.lat.toFixed(5)}, {dataTarget.lon.toFixed(5)}</small></div><button className={`data-favorite${isFavorite(dataTarget) ? ' active' : ''}`} onClick={() => void toggleFavorite(dataTarget)} aria-label={isFavorite(dataTarget) ? 'Retirer des favoris' : 'Surveiller ce coin'}><Star size={19} fill={isFavorite(dataTarget) ? 'currentColor' : 'none'} /></button></div>
               <div className="score-strip">
                 <div><b>{dataTarget.forestScore}</b><span>Forêt</span></div><div><b>{dataTarget.soilScore}</b><span>Sol</span></div><div><b>{dataTarget.terrainScore}</b><span>Relief</span></div><div><b>{dataTarget.conditionScore}</b><span>Moment</span></div><div><b>{dataTarget.personalCorrection > 0 ? `+${dataTarget.personalCorrection}` : dataTarget.personalCorrection}</b><span>Terrain réel</span></div>
               </div>
