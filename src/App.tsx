@@ -22,6 +22,7 @@ import type { FavoriteSpot, LatLng, Observation, ObservationOutcome, PotentialPo
 import { loadObservations, loadTheme, persistObservations, persistTheme, SPECIES } from './domain';
 import { fetchForestZoneAtPoint, fetchForestZones } from './environment';
 import { favoriteFromPotential, favoriteId, loadFavorites, persistFavorites } from './favorites';
+import { fetchMunicipality } from './geocoding';
 import {
   deleteObservationPhoto,
   formatCacheAge,
@@ -419,7 +420,10 @@ export default function App() {
 
   useEffect(() => {
     const refresh = () => {
-      if (document.visibilityState === 'visible' && navigator.onLine) void refreshFavorites();
+      if (document.visibilityState === 'visible' && navigator.onLine) {
+        void refreshFavorites();
+        void enrichFavoriteCommunes();
+      }
     };
     const initialTimer = window.setTimeout(refresh, 1200);
     const interval = window.setInterval(refresh, 30 * 60 * 1000);
@@ -455,6 +459,7 @@ export default function App() {
       setIsOnline(true);
       void syncPendingObservations();
       void refreshFavorites();
+      void enrichFavoriteCommunes();
       void loadArea(currentMapCenter(), false);
     };
     const onOffline = () => setIsOnline(false);
@@ -1022,6 +1027,42 @@ export default function App() {
     return favorites.some((item) => item.id === favoriteId(targetSpecies, point.id));
   }
 
+  async function enrichFavoriteCommunes() {
+    if (!navigator.onLine) return;
+    const missing = favoritesRef.current.filter((item) => !item.commune);
+    if (!missing.length) return;
+
+    // Petits lots pour rester léger même avec beaucoup de coins sauvegardés.
+    for (let offset = 0; offset < missing.length; offset += 4) {
+      const chunk = missing.slice(offset, offset + 4);
+      const resolved = await Promise.all(chunk.map(async (item) => ({
+        id: item.id,
+        commune: await fetchMunicipality({ lat: item.lat, lon: item.lon })
+      })));
+      const byId = new Map(resolved.filter((item) => item.commune).map((item) => [item.id, item.commune] as const));
+      if (!byId.size) continue;
+      setFavorites((current) => current.map((item) => byId.has(item.id) ? { ...item, commune: byId.get(item.id) ?? item.commune } : item));
+    }
+  }
+
+  function removeFavorite(item: FavoriteSpot) {
+    const place = item.commune ? `${item.zone.name} · ${item.commune}` : item.zone.name;
+    const confirmed = window.confirm(
+      `Supprimer ce coin favori surveillé ?\n\n${place}\n\nLes sorties et photos déjà enregistrées ne seront pas supprimées.`
+    );
+    if (!confirmed) return false;
+
+    setFavorites((current) => current.filter((favorite) => favorite.id !== item.id));
+    if (selectedFavoriteId === item.id) {
+      setSelectedFavoriteId(null);
+      setSelectedId(null);
+      setFavoriteDataTarget(null);
+      setFavoriteDataWeather(null);
+    }
+    setNotice('Coin retiré des favoris surveillés.');
+    return true;
+  }
+
   async function requestFavoriteNotifications() {
     if (!('Notification' in window)) return false;
     if (Notification.permission === 'granted') return true;
@@ -1053,13 +1094,18 @@ export default function App() {
     const id = favoriteId(species, point.id);
     const existing = favoritesRef.current.find((item) => item.id === id);
     if (existing) {
-      setFavorites((current) => current.filter((item) => item.id !== id));
-      setNotice('Coin retiré des favoris surveillés.');
+      removeFavorite(existing);
       return;
     }
 
     const favorite = favoriteFromPotential(species, point);
     setFavorites((current) => [favorite, ...current]);
+    if (navigator.onLine) {
+      void fetchMunicipality({ lat: favorite.lat, lon: favorite.lon }).then((commune) => {
+        if (!commune) return;
+        setFavorites((current) => current.map((item) => item.id === favorite.id ? { ...item, commune } : item));
+      });
+    }
     const notificationsEnabled = await requestFavoriteNotifications();
     setNotice(notificationsEnabled
       ? 'Coin ajouté aux favoris : MycoMap te préviendra lorsqu’il repassera à 50/100 ou plus.'
@@ -1321,9 +1367,21 @@ export default function App() {
     }
   }
 
-  function deleteObservation(id: string) {
-    void deleteObservationPhoto(id);
-    setObservations((current) => current.filter((item) => item.id !== id));
+  function deleteObservation(item: Observation) {
+    const date = new Date(item.observedAt).toLocaleDateString('fr-FR');
+    const result = item.outcome === 'found'
+      ? `${SPECIES[item.species].label} · ${item.count} trouvé${item.count > 1 ? 's' : ''}`
+      : `${SPECIES[item.species].label} · rien trouvé`;
+    const photoWarning = item.photoStored
+      ? '\n\nLa photo conservée sur cet appareil sera également supprimée.'
+      : '';
+    const confirmed = window.confirm(
+      `Supprimer cette sortie ?\n\n${result} · ${date}${photoWarning}\n\nCette suppression est définitive.`
+    );
+    if (!confirmed) return;
+
+    if (item.photoStored) void deleteObservationPhoto(item.id);
+    setObservations((current) => current.filter((candidate) => candidate.id !== item.id));
   }
 
   async function exportPointsJson() {
@@ -1476,8 +1534,8 @@ export default function App() {
               .map((favorite) => (
                 <article className="favorite-row" key={favorite.id} onClick={() => void focusFavorite(favorite)}>
                   <div className="favorite-score" style={{ color: favorite.lastScore == null || favorite.lastScore < DISPLAY_MIN_SCORE ? 'var(--muted)' : scoreColor(favorite.lastScore) }}>{favorite.lastScore ?? '—'}</div>
-                  <div><b><SpeciesIcon species={favorite.species} size={17} /> {favorite.zone.name}</b><span>Coin {favorite.lastHabitatScore ?? '—'}/100 · maintenant {favorite.lastScore ?? '—'}/100 · moment {favorite.lastConditionScore ?? '—'}/100</span><small>Prochaine alerte : {favorite.lastAlertLevel == null ? '50' : favorite.lastAlertLevel + 5}/100 · {favorite.lastCheckedAt ? `vérifié ${new Date(favorite.lastCheckedAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}` : 'pas encore vérifié'}</small></div>
-                  <button className="delete favorite-delete" onClick={(event) => { event.stopPropagation(); setFavorites((current) => current.filter((item) => item.id !== favorite.id)); if (selectedFavoriteId === favorite.id) { setSelectedFavoriteId(null); setSelectedId(null); setFavoriteDataTarget(null); setFavoriteDataWeather(null); } }} aria-label="Supprimer ce favori"><Trash2 size={17} /></button>
+                  <div><b><SpeciesIcon species={favorite.species} size={17} /> {favorite.zone.name}</b><small className="favorite-commune"><MapPin size={12} /> {favorite.commune ?? (isOnline ? 'Commune en cours…' : 'Commune non disponible hors ligne')}</small><span>Coin {favorite.lastHabitatScore ?? '—'}/100 · maintenant {favorite.lastScore ?? '—'}/100 · moment {favorite.lastConditionScore ?? '—'}/100</span><small>Prochaine alerte : {favorite.lastAlertLevel == null ? '50' : favorite.lastAlertLevel + 5}/100 · {favorite.lastCheckedAt ? `vérifié ${new Date(favorite.lastCheckedAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}` : 'pas encore vérifié'}</small></div>
+                  <button className="delete favorite-delete" onClick={(event) => { event.stopPropagation(); removeFavorite(favorite); }} aria-label="Supprimer ce favori"><Trash2 size={17} /></button>
                 </article>
               ))}
           </div>
@@ -1488,7 +1546,7 @@ export default function App() {
               <article className="observation" key={obs.id} onClick={() => { mapRef.current?.flyTo({ center: [obs.lon, obs.lat], zoom: 14 }); setSheet(null); }}>
                 <div className={`result-icon ${obs.outcome}`}>{obs.outcome === 'found' ? <SpeciesIcon species={obs.species} size={26} /> : '○'}</div>
                 <div><b>{SPECIES[obs.species].label} · {obs.outcome === 'found' ? `${obs.count} trouvé${obs.count > 1 ? 's' : ''}` : 'rien trouvé'}</b><span>{new Date(obs.observedAt).toLocaleDateString('fr-FR')} · {obs.durationMinutes} min · score au moment {obs.modelSnapshot?.finalScore ?? '—'}/100{obs.pendingEnrichment ? ' · à compléter' : ''}</span>{obs.modelSnapshot && <small>Habitat {obs.modelSnapshot.habitatScore}/100 · hydrique {obs.modelSnapshot.hydricScore}/100 · moment {obs.modelSnapshot.conditionScore}/100</small>}{obs.photoStored && <small>Photo conservée hors ligne</small>}{obs.habitatLabel && <small>{obs.habitatLabel}</small>}</div>
-                <button className="delete" onClick={(e) => { e.stopPropagation(); deleteObservation(obs.id); }}><Trash2 size={17} /></button>
+                <button className="delete" onClick={(e) => { e.stopPropagation(); deleteObservation(obs); }} aria-label="Supprimer cette sortie"><Trash2 size={17} /></button>
               </article>
             ))}
           </div>
