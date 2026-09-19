@@ -1,5 +1,6 @@
 import type { ForestGeometry, ForestZone, LatLng } from './domain';
 import { enrichZonesWithSoil } from './soil';
+import { getCachedEnvironmentProfiles, putCachedEnvironmentProfiles } from './offline';
 
 const IGN_WFS = 'https://data.geopf.fr/wfs/ows';
 const IGN_ALTI = 'https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json';
@@ -285,20 +286,38 @@ export async function fetchForestZones(center: LatLng, radiusMeters = 25000): Pr
     throw new Error('BD Forêt IGN : aucune parcelle exploitable retournée pour cette zone');
   }
 
-  const terrainPoints = parsed.flatMap((zone) => [
-    { lat: zone.lat, lon: zone.lon },
-    offsetPoint(zone, TERRAIN_SAMPLE_METERS, 0),
-    offsetPoint(zone, -TERRAIN_SAMPLE_METERS, 0),
-    offsetPoint(zone, 0, TERRAIN_SAMPLE_METERS),
-    offsetPoint(zone, 0, -TERRAIN_SAMPLE_METERS)
-  ]);
-  const elevations = await fetchIgnElevations(terrainPoints);
-
-  const terrainZones: ForestZone[] = parsed.map((zone, index) => {
-    const terrain = terrainFromSamples(elevations.slice(index * 5, index * 5 + 5));
+  const cleanParsed: ForestZone[] = parsed.map((zone) => {
     const { distance: _distance, ...clean } = zone;
-    return { ...clean, ...terrain };
+    return clean;
   });
 
-  return enrichZonesWithSoil(terrainZones, center, radiusMeters);
+  const cachedProfiles = await getCachedEnvironmentProfiles(cleanParsed);
+  const missingZones = cleanParsed.filter((zone) => !cachedProfiles.has(zone.id));
+
+  let freshProfiles = new Map<string, ForestZone>();
+  if (missingZones.length) {
+    const terrainPoints = missingZones.flatMap((zone) => [
+      { lat: zone.lat, lon: zone.lon },
+      offsetPoint(zone, TERRAIN_SAMPLE_METERS, 0),
+      offsetPoint(zone, -TERRAIN_SAMPLE_METERS, 0),
+      offsetPoint(zone, 0, TERRAIN_SAMPLE_METERS),
+      offsetPoint(zone, 0, -TERRAIN_SAMPLE_METERS)
+    ]);
+    const elevations = await fetchIgnElevations(terrainPoints);
+
+    const terrainZones: ForestZone[] = missingZones.map((zone, index) => {
+      const terrain = terrainFromSamples(elevations.slice(index * 5, index * 5 + 5));
+      return { ...zone, ...terrain };
+    });
+
+    const enriched = await enrichZonesWithSoil(terrainZones);
+    await putCachedEnvironmentProfiles(enriched);
+    freshProfiles = new Map(enriched.map((zone) => [zone.id, zone] as const));
+  }
+
+  return cleanParsed.map((zone) => {
+    const cached = cachedProfiles.get(zone.id);
+    if (cached) return { ...zone, ...cached };
+    return freshProfiles.get(zone.id) ?? zone;
+  });
 }
