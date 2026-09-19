@@ -129,6 +129,8 @@ export interface FavoriteSpot extends LatLng {
   id: string;
   species: Species;
   zone: ForestZone;
+  /** Commune administrative résolue par géocodage inverse IGN/Géoplateforme. */
+  commune?: string | null;
   createdAt: string;
   lastScore: number | null;
   lastHabitatScore: number | null;
