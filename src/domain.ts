@@ -108,6 +108,8 @@ export interface Observation extends LatLng {
   weather?: WeatherSnapshot;
   conditionScore?: number;
   habitatLabel?: string;
+  /** Commune administrative correspondant au point de sortie/photo. */
+  commune?: string | null;
   modelSnapshot?: {
     finalScore: number;
     habitatScore: number;
