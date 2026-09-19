@@ -315,7 +315,7 @@ function containsAny(text: string, words: string[]) {
   return words.some((word) => text.includes(word));
 }
 
-function forestAffinity(species: Species, zone: ForestZone) {
+export function scoreForestAffinity(species: Species, zone: ForestZone) {
   const code = (zone.forestCode ?? '').toUpperCase();
   const text = tagsText(zone);
   let score = 34;
@@ -464,7 +464,7 @@ function forestStructureAffinity(species: Species, zone: ForestZone) {
 }
 
 export function scoreHabitat(species: Species, zone: ForestZone) {
-  const forestScore = forestAffinity(species, zone);
+  const forestScore = scoreForestAffinity(species, zone);
   const terrainScore = Math.round(
     elevationAffinity(species, zone.elevation) * 0.52 +
     slopeAffinity(species, zone.slope) * 0.48
