@@ -11,14 +11,17 @@ import {
   Moon,
   Plus,
   RefreshCw,
+  Star,
+  Bell,
   Sun,
   SunMoon,
   Trash2,
   X
 } from 'lucide-react';
-import type { LatLng, Observation, ObservationOutcome, PotentialPoint, Species, ThemeMode, WeatherSnapshot } from './domain';
+import type { FavoriteSpot, LatLng, Observation, ObservationOutcome, PotentialPoint, Species, ThemeMode, WeatherSnapshot } from './domain';
 import { loadObservations, loadTheme, persistObservations, persistTheme, SPECIES } from './domain';
 import { fetchForestZones } from './environment';
+import { favoriteFromPotential, favoriteId, loadFavorites, persistFavorites } from './favorites';
 import {
   deleteObservationPhoto,
   formatCacheAge,
@@ -43,6 +46,7 @@ const WEATHER_REUSE_DISTANCE_METERS = 3500;
 const STATIC_REVALIDATE_DISTANCE_METERS = 7000;
 
 type Sheet = 'observation' | 'spots' | 'data' | null;
+type MapMode = 'now' | 'habitat';
 
 type Draft = {
   outcome: ObservationOutcome;
@@ -223,6 +227,7 @@ export default function App() {
   const photoInput = useRef<HTMLInputElement | null>(null);
   const loadedCenterRef = useRef<LatLng>(FALLBACK);
   const observationsRef = useRef<Observation[]>([]);
+  const favoritesRef = useRef<FavoriteSpot[]>([]);
   const loadRequestRef = useRef(0);
   const gpsWatchRef = useRef<number | null>(null);
   const gpsFirstFixRef = useRef(false);
@@ -232,12 +237,14 @@ export default function App() {
   const userMovedMapRef = useRef(false);
 
   const [species, setSpecies] = useState<Species>('cepes');
+  const [mapMode, setMapMode] = useState<MapMode>('now');
   const [theme, setTheme] = useState<ThemeMode>(() => loadTheme());
   const [position, setPosition] = useState<LatLng>(FALLBACK);
   const [viewportBounds, setViewportBounds] = useState<ViewportBounds | null>(null);
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
   const [zones, setZones] = useState<Awaited<ReturnType<typeof fetchForestZones>>>([]);
   const [observations, setObservations] = useState<Observation[]>(() => loadObservations());
+  const [favorites, setFavorites] = useState<FavoriteSpot[]>(() => loadFavorites());
   const [loading, setLoading] = useState(true);
   const [mapReady, setMapReady] = useState(false);
   const [sheet, setSheet] = useState<Sheet>(null);
@@ -259,8 +266,10 @@ export default function App() {
   }, [zones, weather, species, observations]);
 
   const displayPotentials = useMemo(
-    () => potentials.filter((item) => item.finalScore >= DISPLAY_MIN_SCORE),
-    [potentials]
+    () => potentials
+      .map((item) => ({ ...item, displayScore: mapMode === 'habitat' ? item.habitatScore : item.finalScore }))
+      .filter((item) => item.displayScore >= DISPLAY_MIN_SCORE),
+    [potentials, mapMode]
   );
 
   const visiblePotentials = useMemo(
@@ -268,7 +277,8 @@ export default function App() {
     [displayPotentials, viewportBounds]
   );
 
-  const selected = useMemo(() => displayPotentials.find((item) => item.id === selectedId) ?? null, [displayPotentials, selectedId]);
+  const selected = useMemo(() => potentials.find((item) => item.id === selectedId) ?? null, [potentials, selectedId]);
+  const selectedDisplayScore = selected ? (mapMode === 'habitat' ? selected.habitatScore : selected.finalScore) : null;
 
   const dataTarget = useMemo(() => {
     if (selected) return selected;
@@ -288,6 +298,11 @@ export default function App() {
     persistObservations(observations);
     observationsRef.current = observations;
   }, [observations]);
+
+  useEffect(() => {
+    persistFavorites(favorites);
+    favoritesRef.current = favorites;
+  }, [favorites]);
 
   useEffect(() => () => {
     if (gpsWatchRef.current != null) navigator.geolocation?.clearWatch(gpsWatchRef.current);
@@ -328,14 +343,14 @@ export default function App() {
       map.addLayer({
         id: 'potential-area', type: 'fill', source: 'potential-polygons',
         paint: {
-          'fill-color': ['interpolate', ['linear'], ['get', 'finalScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
-          'fill-opacity': ['interpolate', ['linear'], ['get', 'finalScore'], 50, 0.16, 62.5, 0.20, 75, 0.27, 87.5, 0.36, 100, 0.48]
+          'fill-color': ['interpolate', ['linear'], ['get', 'displayScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
+          'fill-opacity': ['interpolate', ['linear'], ['get', 'displayScore'], 50, 0.16, 62.5, 0.20, 75, 0.27, 87.5, 0.36, 100, 0.48]
         }
       });
       map.addLayer({
         id: 'potential-outline', type: 'line', source: 'potential-polygons',
         paint: {
-          'line-color': ['interpolate', ['linear'], ['get', 'finalScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
+          'line-color': ['interpolate', ['linear'], ['get', 'displayScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
           'line-width': ['interpolate', ['linear'], ['zoom'], 9, 0.7, 14, 1.7],
           'line-opacity': 0.82
         }
@@ -345,16 +360,16 @@ export default function App() {
         id: 'potential-halo', type: 'circle', source: 'potential-points',
         paint: {
           'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 18, 12, 36, 15, 58],
-          'circle-color': ['interpolate', ['linear'], ['get', 'finalScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
-          'circle-opacity': ['interpolate', ['linear'], ['get', 'finalScore'], 50, 0.07, 62.5, 0.11, 75, 0.16, 87.5, 0.23, 100, 0.30],
+          'circle-color': ['interpolate', ['linear'], ['get', 'displayScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
+          'circle-opacity': ['interpolate', ['linear'], ['get', 'displayScore'], 50, 0.07, 62.5, 0.11, 75, 0.16, 87.5, 0.23, 100, 0.30],
           'circle-blur': 0.72
         }
       });
       map.addLayer({
         id: 'potential-point', type: 'circle', source: 'potential-points',
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['get', 'finalScore'], 50, 3, 75, 5.5, 100, 8.5],
-          'circle-color': ['interpolate', ['linear'], ['get', 'finalScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
+          'circle-radius': ['interpolate', ['linear'], ['get', 'displayScore'], 50, 3, 75, 5.5, 100, 8.5],
+          'circle-color': ['interpolate', ['linear'], ['get', 'displayScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
           'circle-stroke-width': 1.3,
           'circle-stroke-color': '#ffffff',
           'circle-opacity': 0.94
@@ -852,7 +867,7 @@ export default function App() {
     window.setTimeout(() => URL.revokeObjectURL(url), 1500);
   }
 
-  const topScore = visiblePotentials.length ? Math.max(...visiblePotentials.map((item) => item.finalScore)) : null;
+  const topScore = visiblePotentials.length ? Math.max(...visiblePotentials.map((item) => item.displayScore)) : null;
   const cacheLabel = cacheUpdatedAt ? formatCacheAge(cacheUpdatedAt) : null;
 
   return (
