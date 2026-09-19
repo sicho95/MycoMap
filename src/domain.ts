@@ -105,6 +105,19 @@ export interface Observation extends LatLng {
   };
 }
 
+export interface FavoriteSpot extends LatLng {
+  id: string;
+  species: Species;
+  zone: Omit<ForestZone, 'geometry'>;
+  createdAt: string;
+  lastScore: number | null;
+  lastHabitatScore: number | null;
+  lastConditionScore: number | null;
+  lastHydricScore: number | null;
+  lastCheckedAt: string | null;
+  alertActive: boolean;
+}
+
 export interface PotentialPoint extends ForestZone {
   forestScore: number;
   terrainScore: number;
