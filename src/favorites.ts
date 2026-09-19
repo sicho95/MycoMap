@@ -9,8 +9,18 @@ export function favoriteId(species: Species, zoneId: string) {
 export function loadFavorites(): FavoriteSpot[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) as FavoriteSpot[] : [];
-    return Array.isArray(parsed) ? parsed : [];
+    const parsed = raw ? JSON.parse(raw) as Array<FavoriteSpot & { alertActive?: boolean }> : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((item) => {
+      const score = item.lastScore;
+      const migratedLevel = typeof item.lastAlertLevel === 'number'
+        ? item.lastAlertLevel
+        : item.alertActive && score != null && score >= 50
+          ? Math.floor(score / 5) * 5
+          : null;
+      const { alertActive: _legacyAlertActive, ...rest } = item;
+      return { ...rest, lastAlertLevel: migratedLevel };
+    });
   } catch {
     return [];
   }
@@ -49,6 +59,6 @@ export function favoriteFromPotential(species: Species, point: PotentialPoint): 
     lastConditionScore: point.conditionScore,
     lastHydricScore: point.hydricScore,
     lastCheckedAt: new Date().toISOString(),
-    alertActive: point.finalScore >= 50
+    lastAlertLevel: point.finalScore >= 50 ? Math.floor(point.finalScore / 5) * 5 : null
   };
 }
