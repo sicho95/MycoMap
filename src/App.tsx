@@ -213,6 +213,40 @@ function pointInBounds(point: LatLng, bounds: ViewportBounds | null) {
   return lonInside && point.lat >= bounds.south && point.lat <= bounds.north;
 }
 
+function pointInRing(point: LatLng, ring: number[][]) {
+  let inside = false;
+  const x = point.lon;
+  const y = point.lat;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i]?.[0];
+    const yi = ring[i]?.[1];
+    const xj = ring[j]?.[0];
+    const yj = ring[j]?.[1];
+    if (![xi, yi, xj, yj].every(Number.isFinite)) continue;
+    const crosses = ((yi > y) !== (yj > y)) &&
+      (x < ((xj - xi) * (y - yi)) / ((yj - yi) || Number.EPSILON) + xi);
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
+function pointInZoneGeometry(point: LatLng, zone: PotentialPoint) {
+  const geometry = zone.geometry;
+  if (!geometry) return false;
+
+  if (geometry.type === 'Polygon') {
+    const [outer, ...holes] = geometry.coordinates;
+    if (!outer || !pointInRing(point, outer)) return false;
+    return !holes.some((ring) => pointInRing(point, ring));
+  }
+
+  return geometry.coordinates.some((polygon) => {
+    const [outer, ...holes] = polygon;
+    if (!outer || !pointInRing(point, outer)) return false;
+    return !holes.some((ring) => pointInRing(point, ring));
+  });
+}
+
 function bearingBetween(a: LatLng, b: LatLng) {
   const toRad = (value: number) => value * Math.PI / 180;
   const toDeg = (value: number) => value * 180 / Math.PI;
@@ -324,12 +358,26 @@ export default function App() {
 
   const dataTarget = useMemo(() => {
     if (selected) return selected;
+
+    if (pickedLocation) {
+      const containing = potentials.find((candidate) => pointInZoneGeometry(pickedLocation, candidate));
+      if (containing) return containing;
+
+      const nearbyToPicker = potentials.filter((candidate) => distanceMeters(candidate, pickedLocation) <= 12000);
+      if (nearbyToPicker.length) {
+        return nearbyToPicker.reduce((closest, candidate) =>
+          distanceMeters(candidate, pickedLocation) < distanceMeters(closest, pickedLocation) ? candidate : closest
+        );
+      }
+      return null;
+    }
+
     const nearby = potentials.filter((candidate) => distanceMeters(candidate, position) <= 12000);
     if (!nearby.length) return null;
     return nearby.reduce((closest, candidate) =>
       distanceMeters(candidate, position) < distanceMeters(closest, position) ? candidate : closest
     );
-  }, [selected, potentials, position]);
+  }, [selected, pickedLocation, potentials, position]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1315,7 +1363,7 @@ export default function App() {
       {sheet === 'data' && (
         <section className="sheet sheet-data" aria-modal="true">
           <div className="grabber" />
-          <div className="sheet-title"><div><small>{selected ? 'Parcelle sélectionnée' : 'Parcelle la plus proche du centre'}{cacheLabel ? ` · maj ${cacheLabel}` : ''}</small><h2>Données de la zone</h2></div><button className="icon-button" onClick={closeSheet}><X size={20} /></button></div>
+          <div className="sheet-title"><div><small>{selected ? 'Parcelle sélectionnée' : pickedLocation ? 'Parcelle au sélecteur' : 'Parcelle la plus proche du centre'}{cacheLabel ? ` · maj ${cacheLabel}` : ''}</small><h2>Données de la zone</h2></div><button className="icon-button" onClick={closeSheet}><X size={20} /></button></div>
           {!dataTarget || !weather ? (
             <div className="empty">{loading ? 'Analyse de la zone en cours…' : !isOnline ? 'Zone non disponible dans le cache hors ligne.' : 'Aucune parcelle analysée disponible ici pour le moment.'}</div>
           ) : (
