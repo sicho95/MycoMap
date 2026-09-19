@@ -173,6 +173,11 @@ button { color: inherit; border: 0; cursor: pointer; touch-action: manipulation;
   place-items: center;
   border-radius: 14px;
 }
+.map-button.gps-active {
+  color: #1976e9;
+  border-color: rgba(25, 118, 233, .34);
+  box-shadow: 0 8px 22px rgba(25, 118, 233, .20);
+}
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -316,6 +321,8 @@ button { color: inherit; border: 0; cursor: pointer; touch-action: manipulation;
 .auto-card span { color: var(--muted); font-size: 10px; line-height: 1.35; }
 .secondary-button, .save-button { width: 100%; min-height: 46px; border-radius: 14px; font-weight: 800; font-size: 12px; margin-top: 9px; }
 .secondary-button { background: var(--button); border: 1px solid var(--border); }
+.secondary-button:disabled { opacity: .45; cursor: default; }
+.export-button { display: flex; align-items: center; justify-content: center; gap: 7px; margin-top: 4px; }
 .save-button { background: var(--accent); color: white; }
 .save-button:disabled { opacity: .5; }
 
