@@ -304,6 +304,33 @@ export default function App() {
     favoritesRef.current = favorites;
   }, [favorites]);
 
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine) void refreshFavorites();
+    };
+    const initialTimer = window.setTimeout(refresh, 1200);
+    const interval = window.setInterval(refresh, 30 * 60 * 1000);
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('focus', refresh);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener('focus', refresh);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    const id = new URLSearchParams(window.location.search).get('favorite');
+    if (!id) return;
+    const favorite = favorites.find((item) => item.id === id);
+    if (!favorite) return;
+    void focusFavorite(favorite).finally(() => {
+      window.history.replaceState({}, '', import.meta.env.BASE_URL);
+    });
+  }, [mapReady, favorites]);
+
   useEffect(() => () => {
     if (gpsWatchRef.current != null) navigator.geolocation?.clearWatch(gpsWatchRef.current);
     if (compassHandlerRef.current) window.removeEventListener('deviceorientation', compassHandlerRef.current, true);
@@ -314,6 +341,7 @@ export default function App() {
     const onOnline = () => {
       setIsOnline(true);
       void syncPendingObservations();
+      void refreshFavorites();
       void loadArea(currentMapCenter(), false);
     };
     const onOffline = () => setIsOnline(false);
