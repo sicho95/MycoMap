@@ -1,5 +1,5 @@
 import { fromArrayBuffer } from 'geotiff';
-import type { ForestZone, LatLng, SoilProfile, SoilTextureClass, DrainageClass } from './domain';
+import type { ForestZone, SoilProfile, SoilTextureClass, DrainageClass } from './domain';
 
 const SOILGRIDS_WCS = 'https://maps.isric.org/mapserv';
 const DEPTH = '0-5cm';
@@ -28,16 +28,18 @@ const PROPERTY_SCALE: Record<SoilKey, number> = {
 
 const clamp = (value: number, min = 0, max = 100) => Math.min(max, Math.max(min, value));
 
-function bboxAround(center: LatLng, radiusMeters: number) {
-  const padding = 1200;
-  const radius = radiusMeters + padding;
-  const latDelta = radius / 111320;
-  const lonDelta = radius / (111320 * Math.max(0.2, Math.cos(center.lat * Math.PI / 180)));
+function bboxAroundZones(zones: ForestZone[]) {
+  const paddingMeters = 1400;
+  const latitudes = zones.map((zone) => zone.lat);
+  const longitudes = zones.map((zone) => zone.lon);
+  const centerLat = latitudes.reduce((sum, value) => sum + value, 0) / Math.max(1, latitudes.length);
+  const latPadding = paddingMeters / 111320;
+  const lonPadding = paddingMeters / (111320 * Math.max(0.2, Math.cos(centerLat * Math.PI / 180)));
   return {
-    west: center.lon - lonDelta,
-    south: center.lat - latDelta,
-    east: center.lon + lonDelta,
-    north: center.lat + latDelta
+    west: Math.min(...longitudes) - lonPadding,
+    south: Math.min(...latitudes) - latPadding,
+    east: Math.max(...longitudes) + lonPadding,
+    north: Math.max(...latitudes) + latPadding
   };
 }
 
@@ -45,7 +47,7 @@ function coverageId(key: SoilKey) {
   return `${key}_${DEPTH}_mean`;
 }
 
-async function fetchCoverage(key: SoilKey, bbox: ReturnType<typeof bboxAround>): Promise<SoilRaster> {
+async function fetchCoverage(key: SoilKey, bbox: ReturnType<typeof bboxAroundZones>): Promise<SoilRaster> {
   const params = new URLSearchParams({
     map: `/map/${key}.map`,
     SERVICE: 'WCS',
@@ -195,8 +197,9 @@ function makeProfile(point: LatLng, rasters: Map<SoilKey, SoilRaster>): SoilProf
   };
 }
 
-export async function enrichZonesWithSoil(zones: ForestZone[], center: LatLng, radiusMeters: number): Promise<ForestZone[]> {
-  const bbox = bboxAround(center, radiusMeters);
+export async function enrichZonesWithSoil(zones: ForestZone[]): Promise<ForestZone[]> {
+  if (!zones.length) return [];
+  const bbox = bboxAroundZones(zones);
   const keys: SoilKey[] = ['phh2o', 'clay', 'sand', 'silt', 'cfvo', 'wv0033', 'wv1500'];
   try {
     const results = await Promise.all(keys.map((key) => fetchCoverage(key, bbox)));
