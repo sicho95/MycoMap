@@ -363,6 +363,8 @@ button { color: inherit; border: 0; cursor: pointer; touch-action: manipulation;
 .favorite-row > div:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
 .favorite-row b { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .favorite-row span, .favorite-row small { font-size: 9px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.favorite-commune { display: flex; align-items: center; gap: 4px; }
+.favorite-commune svg { flex: 0 0 auto; }
 .favorite-delete { color: var(--muted); }
 .favorite-delete:active { color: var(--accent); }
 .empty.compact { padding: 12px 8px; }
