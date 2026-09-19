@@ -101,11 +101,7 @@ function topographicMomentAdjustment(
   hydricScore: number
 ) {
   const heatLoad = topographicHeatLoad(zone);
-  if (heatLoad == null) {
-    return { heatLoadIndex: null as number | null, factor: 1, adjustmentPct: 0, label: 'relief quasi plat / exposition peu active' };
-  }
-
-  const heat = (heatLoad - 50) / 50; // -1 = frais, +1 = chaud.
+  const heat = heatLoad == null ? 0 : (heatLoad - 50) / 50; // -1 = frais, +1 = chaud.
   const hotExposure = Math.max(0, heat);
   const coolExposure = Math.max(0, -heat);
   const dryness = clamp((58 - hydricScore) / 58, 0, 1);
@@ -116,6 +112,13 @@ function topographicMomentAdjustment(
     weather
   );
 
+  const micro = zone.microclimate;
+  const southHorizonShade = micro?.southHorizonDeg == null ? 0 : clamp(micro.southHorizonDeg / 28, 0, 1);
+  const skyShelter = micro?.skyViewPct == null ? 0 : clamp((92 - micro.skyViewPct) / 45, 0, 1);
+  const terrainShelter = Math.max(southHorizonShade * 0.72, skyShelter * 0.55);
+  const canopyShade = micro?.canopyCoverProxyPct == null ? 0 : clamp(micro.canopyCoverProxyPct / 100, 0, 1);
+  const combinedShade = clamp(terrainShelter * 0.42 + canopyShade * 0.58, 0, 1);
+
   let factor = 1;
 
   if (species === 'cepes') {
@@ -125,8 +128,9 @@ function topographicMomentAdjustment(
 
     factor -= hotExposure * (0.04 + 0.13 * stress);
     factor += coolExposure * 0.08 * stress;
+    factor += combinedShade * 0.09 * stress;
+    factor -= combinedShade * 0.025 * cold;
 
-    // En période fraîche et humide, un versant plus chaud peut accélérer légèrement le réchauffement.
     factor += hotExposure * 0.05 * cold * (hydricScore / 100);
     factor -= coolExposure * 0.025 * cold;
   } else if (species === 'girolles') {
@@ -134,33 +138,44 @@ function topographicMomentAdjustment(
     const cold = air == null ? 0 : clamp((9 - air) / 6, 0, 1);
     const stress = Math.max(dryness, heatStress);
 
-    // C. cibarius est plutôt tolérante à l'ombre et rarement associée à la pleine illumination :
-    // la surcharge thermique est donc un peu plus pénalisante.
     factor -= hotExposure * (0.06 + 0.15 * stress);
     factor += coolExposure * 0.09 * stress;
+    factor += combinedShade * 0.11 * stress;
+    factor -= combinedShade * 0.02 * cold;
     factor += hotExposure * 0.03 * cold * (hydricScore / 100);
   } else {
     const soil = weather.soilTemp;
     const springCold = soil == null ? 0 : clamp((10 - soil) / 7, 0, 1);
     const warmStress = soil == null ? 0 : clamp((soil - 15) / 7, 0, 1);
 
-    // Chez les morilles, le réchauffement printanier peut avancer la fructification,
-    // mais une exposition chaude devient défavorable si l'eau manque ou si le sol est déjà chaud.
     factor += hotExposure * 0.12 * springCold * (hydricScore / 100);
     factor -= hotExposure * 0.15 * Math.max(dryness, warmStress);
     factor -= coolExposure * 0.07 * springCold;
     factor += coolExposure * 0.05 * Math.max(dryness, warmStress);
+
+    // Pour les morilles de printemps, l'ombre retarde le réchauffement lorsque le sol est froid,
+    // mais devient protectrice si le sol se dessèche ou chauffe trop.
+    factor -= combinedShade * 0.08 * springCold;
+    factor += combinedShade * 0.07 * Math.max(dryness, warmStress);
   }
 
-  factor = Math.min(1.12, Math.max(0.78, factor));
+  factor = Math.min(1.15, Math.max(0.74, factor));
   const adjustmentPct = Math.round((factor - 1) * 100);
-  const label = heatLoad < 35
-    ? 'versant frais'
-    : heatLoad > 65
-      ? 'versant chaud'
-      : 'exposition intermédiaire';
+  const label = heatLoad == null
+    ? 'pente faible'
+    : heatLoad < 35
+      ? 'versant frais'
+      : heatLoad > 65
+        ? 'versant chaud'
+        : 'exposition intermédiaire';
 
-  return { heatLoadIndex: heatLoad, factor, adjustmentPct, label };
+  return {
+    heatLoadIndex: heatLoad,
+    factor,
+    adjustmentPct,
+    label,
+    combinedShadePct: micro ? Math.round(combinedShade * 100) : null
+  };
 }
 
 function conditionCepes(weather: WeatherSnapshot, at: Date, zone?: ForestZone) {
@@ -416,6 +431,38 @@ function soilAffinity(species: Species, soil?: SoilProfile) {
   return Math.round(phScore * 0.34 + textureScore * 0.36 + drainageScore * 0.30);
 }
 
+function forestStructureAffinity(species: Species, zone: ForestZone) {
+  const micro = zone.microclimate;
+  if (!micro?.lidarAvailable || micro.canopyCoverProxyPct == null) return null;
+
+  const cover = micro.canopyCoverProxyPct;
+  const height = micro.canopyHeightM;
+  let coverScore: number;
+  let heightScore: number;
+
+  if (species === 'cepes') {
+    // La surface terrière et la maturité du peuplement sont des prédicteurs documentés,
+    // mais le LiDAR utilisé ici ne mesure pas directement la surface terrière : poids volontairement faible.
+    coverScore = bell(cover, 2, 28, 82, 100);
+    heightScore = height == null ? 55 : bell(height, 1, 9, 30, 48);
+    return Math.round(clamp(coverScore * 0.55 + heightScore * 0.45));
+  }
+
+  if (species === 'girolles') {
+    // Des peuplements modérément ouverts sont documentés pour C. cibarius ; éviter les extrêmes.
+    coverScore = bell(cover, 2, 28, 78, 99);
+    heightScore = height == null ? 55 : bell(height, 1, 7, 28, 45);
+    return Math.round(clamp(coverScore * 0.68 + heightScore * 0.32));
+  }
+
+  // Morchella est très hétérogène (forêt, perturbations, brûlis). On ne fait de la canopée
+  // qu'un indicateur doux, autour de la couverture modérée observée dans certaines études de terrain.
+  coverScore = bell(cover, 0, 28, 72, 100);
+  heightScore = height == null ? 55 : bell(height, 0, 5, 26, 45);
+  const raw = coverScore * 0.72 + heightScore * 0.28;
+  return Math.round(clamp(55 + (raw - 55) * 0.45));
+}
+
 export function scoreHabitat(species: Species, zone: ForestZone) {
   const forestScore = forestAffinity(species, zone);
   const terrainScore = Math.round(
@@ -423,12 +470,22 @@ export function scoreHabitat(species: Species, zone: ForestZone) {
     slopeAffinity(species, zone.slope) * 0.48
   );
   const soilScore = soilAffinity(species, zone.soil);
+  const structureScore = forestStructureAffinity(species, zone);
 
-  const weighted = species === 'morilles'
-    ? forestScore * 0.40 + soilScore * 0.40 + terrainScore * 0.20
-    : species === 'girolles'
-      ? forestScore * 0.56 + soilScore * 0.34 + terrainScore * 0.10
-      : forestScore * 0.60 + soilScore * 0.30 + terrainScore * 0.10;
+  let weighted: number;
+  if (structureScore == null) {
+    weighted = species === 'morilles'
+      ? forestScore * 0.40 + soilScore * 0.40 + terrainScore * 0.20
+      : species === 'girolles'
+        ? forestScore * 0.56 + soilScore * 0.34 + terrainScore * 0.10
+        : forestScore * 0.60 + soilScore * 0.30 + terrainScore * 0.10;
+  } else {
+    weighted = species === 'morilles'
+      ? forestScore * 0.38 + soilScore * 0.39 + terrainScore * 0.18 + structureScore * 0.05
+      : species === 'girolles'
+        ? forestScore * 0.51 + soilScore * 0.33 + terrainScore * 0.08 + structureScore * 0.08
+        : forestScore * 0.55 + soilScore * 0.29 + terrainScore * 0.08 + structureScore * 0.08;
+  }
 
   const habitatScore = species === 'morilles'
     ? (forestScore < 65 ? Math.min(weighted, 68) : weighted)
@@ -438,6 +495,7 @@ export function scoreHabitat(species: Species, zone: ForestZone) {
     forestScore: Math.round(forestScore),
     terrainScore,
     soilScore,
+    structureScore,
     habitatScore: Math.round(clamp(habitatScore))
   };
 }
@@ -533,6 +591,7 @@ export function scoreZone(species: Species, zone: ForestZone, weather: WeatherSn
     hydricLabel: hydric.label,
     heatLoadIndex: topo.heatLoadIndex,
     topographicAdjustmentPct: topo.adjustmentPct,
+    structureScore: habitat.structureScore,
     personalCorrection: correction,
     finalScore,
     reasons: [
@@ -546,7 +605,14 @@ export function scoreZone(species: Species, zone: ForestZone, weather: WeatherSn
       hydric.relativeWaterPct == null ? 'Eau utile relative non calculable' : `Eau utile disponible ${hydric.relativeWaterPct}%`,
       topo.heatLoadIndex == null
         ? 'Charge thermique topographique neutre'
-        : `Charge thermique ${topo.heatLoadIndex}/100 · ${topo.label} · effet ${topo.adjustmentPct >= 0 ? '+' : ''}${topo.adjustmentPct}%`,
+        : `Charge thermique ${topo.heatLoadIndex}/100 · ${topo.label} · effet microclimat ${topo.adjustmentPct >= 0 ? '+' : ''}${topo.adjustmentPct}%`,
+      zone.microclimate?.skyViewPct == null
+        ? 'Horizon détaillé non disponible'
+        : `Ciel visible ${zone.microclimate.skyViewPct}% · horizon sud ${zone.microclimate.southHorizonDeg ?? '—'}°`,
+      zone.microclimate?.lidarAvailable
+        ? `LiDAR canopée · couverture proxy ${zone.microclimate.canopyCoverProxyPct ?? '—'}% · hauteur médiane ${zone.microclimate.canopyHeightM ?? '—'} m`
+        : 'LiDAR canopée non disponible sur cette parcelle',
+      habitat.structureScore == null ? 'Structure forestière détaillée neutre' : `Structure forestière ${habitat.structureScore}/100`,
       `Moment ${conditionScore}/100`,
       phenologyReason(species, weather),
       correction === 0 ? 'Historique neutre' : `Historique ${correction > 0 ? '+' : ''}${correction}`,
