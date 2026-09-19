@@ -37,13 +37,139 @@ export function scoreSeason(species: Species, at: Date) {
   return Math.round(current * (1 - progress) + next * progress);
 }
 
-function conditionCepes(weather: WeatherSnapshot, at: Date) {
+function adjustedAirTemp(value: number | null | undefined, zone?: ForestZone, weather?: WeatherSnapshot) {
+  if (value == null || !Number.isFinite(value)) return value ?? null;
+  if (!zone || zone.elevation == null || weather?.elevation == null || !Number.isFinite(weather.elevation)) return value;
+
+  // Gradient atmosphérique standard utilisé seulement comme correction locale douce.
+  // 6,5 °C / km : une parcelle plus haute que la maille météo est légèrement refroidie.
+  const deltaMeters = zone.elevation - weather.elevation;
+  const correction = clamp(deltaMeters * 0.0065, -4, 4);
+  return value - correction;
+}
+
+export function topographicHeatLoad(zone: ForestZone) {
+  if (
+    zone.slope == null ||
+    zone.aspect == null ||
+    !Number.isFinite(zone.slope) ||
+    !Number.isFinite(zone.aspect) ||
+    zone.slope < 1.2 ||
+    Math.abs(zone.lat) < 30 ||
+    Math.abs(zone.lat) > 60
+  ) return null;
+
+  const toRad = (value: number) => value * Math.PI / 180;
+  const latitude = toRad(Math.abs(zone.lat));
+  const slope = toRad(clamp(zone.slope, 0, 60));
+  const aspect = ((zone.aspect % 360) + 360) % 360;
+
+  // McCune & Keon (2002) : aspect replié autour de l'axe NE–SO pour représenter
+  // la charge thermique (NE = plus frais, SO = plus chaud), puis Eq. 3.
+  const foldedHeatAspect = Math.abs(180 - Math.abs(aspect - 225));
+  const a = toRad(foldedHeatAspect);
+  const raw =
+    0.339 +
+    0.808 * Math.cos(latitude) * Math.cos(slope) -
+    0.196 * Math.sin(latitude) * Math.sin(slope) -
+    0.482 * Math.cos(a) * Math.sin(slope);
+
+  const coolest =
+    0.339 +
+    0.808 * Math.cos(latitude) * Math.cos(slope) -
+    0.196 * Math.sin(latitude) * Math.sin(slope) -
+    0.482 * Math.sin(slope);
+  const hottest =
+    0.339 +
+    0.808 * Math.cos(latitude) * Math.cos(slope) -
+    0.196 * Math.sin(latitude) * Math.sin(slope) +
+    0.482 * Math.sin(slope);
+
+  const orientation = hottest > coolest
+    ? clamp(((raw - coolest) / (hottest - coolest)) * 100) / 100
+    : 0.5;
+
+  // Sur faible pente, l'orientation a peu d'effet. À ~30° et au-delà elle s'exprime pleinement.
+  const slopeIntensity = clamp(Math.sin(slope) / Math.sin(toRad(30)), 0, 1);
+  return Math.round(clamp(50 + (orientation - 0.5) * 100 * slopeIntensity));
+}
+
+function topographicMomentAdjustment(
+  species: Species,
+  zone: ForestZone,
+  weather: WeatherSnapshot,
+  hydricScore: number
+) {
+  const heatLoad = topographicHeatLoad(zone);
+  if (heatLoad == null) {
+    return { heatLoadIndex: null as number | null, factor: 1, adjustmentPct: 0, label: 'relief quasi plat / exposition peu active' };
+  }
+
+  const heat = (heatLoad - 50) / 50; // -1 = frais, +1 = chaud.
+  const hotExposure = Math.max(0, heat);
+  const coolExposure = Math.max(0, -heat);
+  const dryness = clamp((58 - hydricScore) / 58, 0, 1);
+
+  const air = adjustedAirTemp(
+    weather.airTemp20 ?? weather.airTemp14 ?? weather.airTemp7,
+    zone,
+    weather
+  );
+
+  let factor = 1;
+
+  if (species === 'cepes') {
+    const heatStress = air == null ? 0 : clamp((air - 16) / 7, 0, 1);
+    const cold = air == null ? 0 : clamp((10 - air) / 7, 0, 1);
+    const stress = Math.max(dryness, heatStress);
+
+    factor -= hotExposure * (0.04 + 0.13 * stress);
+    factor += coolExposure * 0.08 * stress;
+
+    // En période fraîche et humide, un versant plus chaud peut accélérer légèrement le réchauffement.
+    factor += hotExposure * 0.05 * cold * (hydricScore / 100);
+    factor -= coolExposure * 0.025 * cold;
+  } else if (species === 'girolles') {
+    const heatStress = air == null ? 0 : clamp((air - 18) / 8, 0, 1);
+    const cold = air == null ? 0 : clamp((9 - air) / 6, 0, 1);
+    const stress = Math.max(dryness, heatStress);
+
+    // C. cibarius est plutôt tolérante à l'ombre et rarement associée à la pleine illumination :
+    // la surcharge thermique est donc un peu plus pénalisante.
+    factor -= hotExposure * (0.06 + 0.15 * stress);
+    factor += coolExposure * 0.09 * stress;
+    factor += hotExposure * 0.03 * cold * (hydricScore / 100);
+  } else {
+    const soil = weather.soilTemp;
+    const springCold = soil == null ? 0 : clamp((10 - soil) / 7, 0, 1);
+    const warmStress = soil == null ? 0 : clamp((soil - 15) / 7, 0, 1);
+
+    // Chez les morilles, le réchauffement printanier peut avancer la fructification,
+    // mais une exposition chaude devient défavorable si l'eau manque ou si le sol est déjà chaud.
+    factor += hotExposure * 0.12 * springCold * (hydricScore / 100);
+    factor -= hotExposure * 0.15 * Math.max(dryness, warmStress);
+    factor -= coolExposure * 0.07 * springCold;
+    factor += coolExposure * 0.05 * Math.max(dryness, warmStress);
+  }
+
+  factor = Math.min(1.12, Math.max(0.78, factor));
+  const adjustmentPct = Math.round((factor - 1) * 100);
+  const label = heatLoad < 35
+    ? 'versant frais'
+    : heatLoad > 65
+      ? 'versant chaud'
+      : 'exposition intermédiaire';
+
+  return { heatLoadIndex: heatLoad, factor, adjustmentPct, label };
+}
+
+function conditionCepes(weather: WeatherSnapshot, at: Date, zone?: ForestZone) {
   const season = scoreSeason('cepes', at);
   const rain30 = rising(weather.rain30, 4, 90);
   const rain14 = rising(weather.rain14, 1.5, 28);
   const rain7 = rising(weather.rain7, 0.5, 14);
   const moisture = bell(weather.soilMoisture, 0.06, 0.18, 0.40, 0.60);
-  const temp20 = bell(weather.airTemp20 ?? weather.airTemp7 ?? weather.soilTemp, 3, 9, 17, 23);
+  const temp20 = bell(adjustedAirTemp(weather.airTemp20 ?? weather.airTemp7 ?? weather.soilTemp, zone, weather), 3, 9, 17, 23);
 
   // La pluie ancienne ne peut plus masquer deux semaines très sèches.
   const waterSignal = rain30 * 0.20 + rain14 * 0.32 + rain7 * 0.20 + moisture * 0.28;
@@ -52,12 +178,12 @@ function conditionCepes(weather: WeatherSnapshot, at: Date) {
   return Math.round(clamp(meteo * gate));
 }
 
-function conditionGirolles(weather: WeatherSnapshot, at: Date) {
+function conditionGirolles(weather: WeatherSnapshot, at: Date, zone?: ForestZone) {
   const season = scoreSeason('girolles', at);
   const gdd = bell(weather.gdd84Base5, 180, 430, 700, 1150);
   const rainLong = bell(weather.rain84 ?? weather.rain56 ?? weather.rain30, 15, 50, 135, 300);
   const recentRain = rising(weather.rain7, 0.5, 20);
-  const recentTemp = bell(weather.airTemp14 ?? weather.airTemp20 ?? weather.airTemp7, 4, 9, 20, 28);
+  const recentTemp = bell(adjustedAirTemp(weather.airTemp14 ?? weather.airTemp20 ?? weather.airTemp7, zone, weather), 4, 9, 20, 28);
   const moisture = bell(weather.soilMoisture, 0.06, 0.18, 0.42, 0.62);
   const longSignal = gdd * 0.52 + rainLong * 0.48;
   const nearSignal = recentRain * 0.55 + recentTemp * 0.45;
@@ -66,22 +192,22 @@ function conditionGirolles(weather: WeatherSnapshot, at: Date) {
   return Math.round(clamp(meteo * gate));
 }
 
-function conditionMorilles(weather: WeatherSnapshot, at: Date) {
+function conditionMorilles(weather: WeatherSnapshot, at: Date, zone?: ForestZone) {
   const season = scoreSeason('morilles', at);
   const rainEvent = rising(weather.maxRainEvent30, 1, 10);
   const rain30 = bell(weather.rain30, 3, 15, 90, 180);
   const soilTemp = bell(weather.soilTemp, 1, 5, 15, 23);
-  const airTemp = bell(weather.airTemp20 ?? weather.airTemp14 ?? weather.airTemp7, 0, 5, 16, 24);
+  const airTemp = bell(adjustedAirTemp(weather.airTemp20 ?? weather.airTemp14 ?? weather.airTemp7, zone, weather), 0, 5, 16, 24);
   const moisture = bell(weather.soilMoisture, 0.07, 0.18, 0.42, 0.62);
   const meteo = rainEvent * 0.30 + rain30 * 0.17 + soilTemp * 0.28 + airTemp * 0.10 + moisture * 0.15;
   const gate = seasonGate(season, 0.03, 1.45);
   return Math.round(clamp(meteo * gate));
 }
 
-export function scoreConditions(species: Species, weather: WeatherSnapshot, at = new Date(weather.date)) {
-  if (species === 'cepes') return conditionCepes(weather, at);
-  if (species === 'girolles') return conditionGirolles(weather, at);
-  return conditionMorilles(weather, at);
+export function scoreConditions(species: Species, weather: WeatherSnapshot, at = new Date(weather.date), zone?: ForestZone) {
+  if (species === 'cepes') return conditionCepes(weather, at, zone);
+  if (species === 'girolles') return conditionGirolles(weather, at, zone);
+  return conditionMorilles(weather, at, zone);
 }
 
 export function assessHydricState(species: Species, zone: ForestZone, weather: WeatherSnapshot) {
@@ -156,10 +282,11 @@ export function assessHydricState(species: Species, zone: ForestZone, weather: W
 }
 
 export function scoreMoment(species: Species, weather: WeatherSnapshot, zone?: ForestZone, at = new Date(weather.date)) {
-  const base = scoreConditions(species, weather, at);
+  const base = scoreConditions(species, weather, at, zone);
   if (!zone) return base;
   const hydric = assessHydricState(species, zone, weather);
-  return Math.round(clamp(base * hydric.gate));
+  const topo = topographicMomentAdjustment(species, zone, weather, hydric.score);
+  return Math.round(clamp(base * hydric.gate * topo.factor));
 }
 
 function tagsText(zone: ForestZone) {
@@ -246,13 +373,6 @@ function slopeAffinity(species: Species, slope: number | null) {
   return bell(slope, -1, 0, 22, 45);
 }
 
-function aspectAffinity(species: Species, aspect: number | null) {
-  if (aspect == null) return 58;
-  const target = species === 'morilles' ? 330 : 45;
-  const delta = Math.abs(((aspect - target + 540) % 360) - 180);
-  return clamp(82 - delta * 0.18, 48, 82);
-}
-
 function phAffinity(species: Species, ph: number | null) {
   if (species === 'morilles') return bell(ph, 4.4, 5.8, 7.1, 8.4);
   if (species === 'girolles') return bell(ph, 3.0, 4.0, 5.5, 6.8);
@@ -299,9 +419,8 @@ function soilAffinity(species: Species, soil?: SoilProfile) {
 export function scoreHabitat(species: Species, zone: ForestZone) {
   const forestScore = forestAffinity(species, zone);
   const terrainScore = Math.round(
-    elevationAffinity(species, zone.elevation) * 0.45 +
-    slopeAffinity(species, zone.slope) * 0.35 +
-    aspectAffinity(species, zone.aspect) * 0.20
+    elevationAffinity(species, zone.elevation) * 0.52 +
+    slopeAffinity(species, zone.slope) * 0.48
   );
   const soilScore = soilAffinity(species, zone.soil);
 
@@ -394,6 +513,7 @@ export function scoreZone(species: Species, zone: ForestZone, weather: WeatherSn
   const at = new Date(weather.date);
   const seasonScore = scoreSeason(species, at);
   const hydric = assessHydricState(species, zone, weather);
+  const topo = topographicMomentAdjustment(species, zone, weather, hydric.score);
   const conditionScore = scoreMoment(species, weather, zone, at);
   const correction = personalCorrection(species, zone, observations);
 
@@ -411,6 +531,8 @@ export function scoreZone(species: Species, zone: ForestZone, weather: WeatherSn
     hydricScore: hydric.score,
     hydricRelativeWaterPct: hydric.relativeWaterPct,
     hydricLabel: hydric.label,
+    heatLoadIndex: topo.heatLoadIndex,
+    topographicAdjustmentPct: topo.adjustmentPct,
     personalCorrection: correction,
     finalScore,
     reasons: [
@@ -422,6 +544,9 @@ export function scoreZone(species: Species, zone: ForestZone, weather: WeatherSn
       `Saison ${seasonScore}/100`,
       `Hydrique ${hydric.score}/100 · ${hydric.label}`,
       hydric.relativeWaterPct == null ? 'Eau utile relative non calculable' : `Eau utile disponible ${hydric.relativeWaterPct}%`,
+      topo.heatLoadIndex == null
+        ? 'Charge thermique topographique neutre'
+        : `Charge thermique ${topo.heatLoadIndex}/100 · ${topo.label} · effet ${topo.adjustmentPct >= 0 ? '+' : ''}${topo.adjustmentPct}%`,
       `Moment ${conditionScore}/100`,
       phenologyReason(species, weather),
       correction === 0 ? 'Historique neutre' : `Historique ${correction > 0 ? '+' : ''}${correction}`,
