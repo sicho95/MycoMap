@@ -445,6 +445,98 @@ export default function App() {
           'circle-opacity': 0.94
         }
       });
+
+      map.addSource('favorite-polygons', { type: 'geojson', data: favoritePolygonsGeojson([]) as any });
+      map.addLayer({
+        id: 'favorite-area',
+        type: 'fill',
+        source: 'favorite-polygons',
+        minzoom: 9,
+        paint: {
+          'fill-color': ['case',
+            ['>=', ['get', 'lastScore'], 50],
+            ['interpolate', ['linear'], ['get', 'lastScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
+            '#69736d'
+          ],
+          'fill-opacity': ['case', ['>=', ['get', 'lastScore'], 50], 0.24, 0.12]
+        }
+      });
+      map.addLayer({
+        id: 'favorite-outline',
+        type: 'line',
+        source: 'favorite-polygons',
+        minzoom: 9,
+        paint: {
+          'line-color': ['case',
+            ['>=', ['get', 'lastScore'], 50],
+            ['interpolate', ['linear'], ['get', 'lastScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
+            '#69736d'
+          ],
+          'line-width': ['interpolate', ['linear'], ['zoom'], 9, 1.4, 14, 2.5],
+          'line-opacity': 0.95
+        }
+      });
+      map.addSource('favorite-points', { type: 'geojson', data: favoritePointsGeojson([]) });
+      map.addLayer({
+        id: 'favorite-point-halo',
+        type: 'circle',
+        source: 'favorite-points',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 7, 9, 9, 14, 11],
+          'circle-color': '#ffffff',
+          'circle-opacity': 0.95,
+          'circle-stroke-width': 1.2,
+          'circle-stroke-color': '#202823'
+        }
+      });
+      map.addLayer({
+        id: 'favorite-point',
+        type: 'circle',
+        source: 'favorite-points',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 4.5, 9, 6, 14, 7.5],
+          'circle-color': ['case',
+            ['>=', ['get', 'lastScore'], 50],
+            ['interpolate', ['linear'], ['get', 'lastScore'], 50, '#3b82c4', 62.5, '#43a867', 75, '#f0c52e', 87.5, '#ff5b2e', 100, '#d61536'],
+            '#69736d'
+          ],
+          'circle-stroke-width': 1,
+          'circle-stroke-color': '#ffffff'
+        }
+      });
+
+      map.addSource('selected-favorite-polygon', { type: 'geojson', data: selectedFavoritePolygonGeojson(null) as any });
+      map.addLayer({
+        id: 'selected-favorite-area',
+        type: 'fill',
+        source: 'selected-favorite-polygon',
+        minzoom: 8,
+        paint: { 'fill-color': '#7c3aed', 'fill-opacity': 0.11 }
+      });
+      map.addLayer({
+        id: 'selected-favorite-outline',
+        type: 'line',
+        source: 'selected-favorite-polygon',
+        minzoom: 8,
+        paint: {
+          'line-color': '#7c3aed',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 8, 2.4, 14, 4.5],
+          'line-opacity': 1
+        }
+      });
+      map.addSource('selected-favorite-point', { type: 'geojson', data: pointGeojson([]) });
+      map.addLayer({
+        id: 'selected-favorite-point',
+        type: 'circle',
+        source: 'selected-favorite-point',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 9, 9, 12, 14, 15],
+          'circle-color': 'rgba(0,0,0,0)',
+          'circle-stroke-width': 3,
+          'circle-stroke-color': '#7c3aed'
+        }
+      });
+
       map.addSource('observations', { type: 'geojson', data: pointGeojson([]) });
       map.addLayer({ id: 'observations', type: 'circle', source: 'observations', paint: { 'circle-radius': 6, 'circle-color': '#111814', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' } });
       map.addSource('picked', { type: 'geojson', data: pointGeojson([]) });
