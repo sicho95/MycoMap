@@ -1,6 +1,7 @@
 import type { ForestGeometry, ForestZone, LatLng } from './domain';
 import { enrichZonesWithSoil } from './soil';
 import { getCachedEnvironmentProfiles, putCachedEnvironmentProfiles } from './offline';
+import { scoreForestAffinity } from './scoring';
 
 const IGN_WFS = 'https://data.geopf.fr/wfs/ows';
 const IGN_ALTI = 'https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json';
@@ -8,7 +9,7 @@ const FOREST_LAYER = 'LANDCOVER.FORESTINVENTORY.V2:formation_vegetale';
 const ALTI_RESOURCE = 'ign_rge_alti_wld';
 const LIDAR_MNX_RESOURCE = 'ign_lidar_hd_mnx_multi_wld';
 const MAX_WFS_FEATURES = 1800;
-const MAX_ANALYSED_ZONES = 280;
+const MAX_ANALYSED_ZONES = 600;
 const TERRAIN_SAMPLE_METERS = 80;
 const MICROCLIMATE_DETAIL_ZONES = 24;
 const HORIZON_AZIMUTHS = [0, 45, 90, 135, 180, 225, 270, 315] as const;
@@ -218,29 +219,28 @@ async function fetchIgnForestPage(variant: WfsVariant, bbox: ReturnType<typeof b
   return Array.isArray(payload?.features) ? payload.features as any[] : [];
 }
 
-async function fetchIgnForestFeatures(center: LatLng, radiusMeters: number) {
-  const bbox = bboxAround(center, radiusMeters);
-  const variants: WfsVariant[] = [
-    {
-      srsName: 'CRS:84',
-      bbox: (box) => `${box.west},${box.south},${box.east},${box.north},CRS:84`
-    },
-    {
-      srsName: 'urn:ogc:def:crs:OGC::CRS84',
-      bbox: (box) => `${box.west},${box.south},${box.east},${box.north},urn:ogc:def:crs:OGC::CRS84`
-    },
-    {
-      srsName: 'EPSG:4326',
-      bbox: (box) => `${box.south},${box.west},${box.north},${box.east},urn:ogc:def:crs:EPSG::4326`
-    },
-    {
-      srsName: 'EPSG:4326',
-      bbox: (box) => `${box.west},${box.south},${box.east},${box.north},EPSG:4326`
-    }
-  ];
+const WFS_VARIANTS: WfsVariant[] = [
+  {
+    srsName: 'CRS:84',
+    bbox: (box) => `${box.west},${box.south},${box.east},${box.north},CRS:84`
+  },
+  {
+    srsName: 'urn:ogc:def:crs:OGC::CRS84',
+    bbox: (box) => `${box.west},${box.south},${box.east},${box.north},urn:ogc:def:crs:OGC::CRS84`
+  },
+  {
+    srsName: 'EPSG:4326',
+    bbox: (box) => `${box.south},${box.west},${box.north},${box.east},urn:ogc:def:crs:EPSG::4326`
+  },
+  {
+    srsName: 'EPSG:4326',
+    bbox: (box) => `${box.west},${box.south},${box.east},${box.north},EPSG:4326`
+  }
+];
 
+async function fetchIgnForestFeaturesForBbox(bbox: ReturnType<typeof bboxAround>) {
   let lastError: unknown = null;
-  for (const variant of variants) {
+  for (const variant of WFS_VARIANTS) {
     try {
       const features: any[] = [];
       for (let startIndex = 0; startIndex < MAX_WFS_FEATURES; startIndex += 600) {
@@ -255,6 +255,40 @@ async function fetchIgnForestFeatures(center: LatLng, radiusMeters: number) {
   }
   if (lastError) throw lastError;
   return [];
+}
+
+function splitBboxFour(box: ReturnType<typeof bboxAround>) {
+  const midLon = (box.west + box.east) / 2;
+  const midLat = (box.south + box.north) / 2;
+  return [
+    { west: box.west, south: box.south, east: midLon, north: midLat },
+    { west: midLon, south: box.south, east: box.east, north: midLat },
+    { west: box.west, south: midLat, east: midLon, north: box.north },
+    { west: midLon, south: midLat, east: box.east, north: box.north }
+  ];
+}
+
+function featureDedupKey(feature: any) {
+  const props = feature?.properties ?? {};
+  return String(props.ID ?? props.id ?? feature?.id ?? JSON.stringify(feature?.geometry ?? ''));
+}
+
+async function fetchIgnForestFeatures(center: LatLng, radiusMeters: number) {
+  const bbox = bboxAround(center, radiusMeters);
+
+  // Pour les grandes recherches, on découpe le carré en 4. Cela évite qu'un seul GetFeature
+  // atteigne son plafond de pagination et fasse disparaître des parcelles pourtant présentes.
+  const boxes = radiusMeters >= 12000 ? splitBboxFour(bbox) : [bbox];
+  const all: any[] = [];
+
+  for (const box of boxes) {
+    const features = await fetchIgnForestFeaturesForBbox(box);
+    all.push(...features);
+  }
+
+  const deduped = new Map<string, any>();
+  for (const feature of all) deduped.set(featureDedupKey(feature), feature);
+  return [...deduped.values()];
 }
 
 function offsetPoint(point: LatLng, northMeters: number, eastMeters: number): LatLng {
@@ -463,10 +497,15 @@ export async function fetchForestZones(center: LatLng, radiusMeters = 25000): Pr
       if (!zone) return null;
       const distance = distanceMeters(center, zone);
       if (distance > radiusMeters * 1.18) return null;
-      return { ...zone, distance };
+      const discoveryAffinity = Math.max(
+        scoreForestAffinity('cepes', zone),
+        scoreForestAffinity('girolles', zone),
+        scoreForestAffinity('morilles', zone)
+      );
+      return { ...zone, distance, discoveryAffinity };
     })
     .filter((item): item is NonNullable<typeof item> => item != null)
-    .sort((a, b) => a.distance - b.distance)
+    .sort((a, b) => b.discoveryAffinity - a.discoveryAffinity || a.distance - b.distance)
     .slice(0, MAX_ANALYSED_ZONES);
 
   if (!parsed.length) {
@@ -474,7 +513,7 @@ export async function fetchForestZones(center: LatLng, radiusMeters = 25000): Pr
   }
 
   const cleanParsed: ForestZone[] = parsed.map((zone) => {
-    const { distance: _distance, ...clean } = zone;
+    const { distance: _distance, discoveryAffinity: _discoveryAffinity, ...clean } = zone;
     return clean;
   });
 
