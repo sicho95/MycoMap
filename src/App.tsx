@@ -31,7 +31,7 @@ import {
   storeObservationPhoto,
   WEATHER_CACHE_MAX_AGE_MS
 } from './offline';
-import { distanceMeters, scoreColor, scoreConditions, scoreLabel, scoreZone } from './scoring';
+import { distanceMeters, scoreColor, scoreConditions, scoreLabel, scoreMoment, scoreZone } from './scoring';
 import { fetchCurrentWeather, fetchWeatherForDate } from './weather';
 
 const FALLBACK: LatLng = { lat: 48.78, lon: 2.26 };
@@ -706,10 +706,12 @@ export default function App() {
       }
     }
 
-    const conditionScore = snapshot ? scoreConditions(species, snapshot, draft.observedAt) : undefined;
     const nearest = zones
       .map((zone) => ({ zone, d: distanceMeters(zone, draft.location!) }))
       .sort((a, b) => a.d - b.d)[0]?.zone;
+    const conditionScore = snapshot
+      ? scoreMoment(species, snapshot, nearest, draft.observedAt)
+      : undefined;
     const photoStored = draft.photoFile ? await storeObservationPhoto(id, draft.photoFile) : false;
 
     const item: Observation = {
@@ -751,9 +753,12 @@ export default function App() {
       try {
         const date = new Date(item.observedAt);
         const snapshot = await fetchWeatherForDate(item.lat, item.lon, date, true);
+        const nearest = zones
+          .map((zone) => ({ zone, d: distanceMeters(zone, item) }))
+          .sort((a, b) => a.d - b.d)[0]?.zone;
         updates.set(item.id, {
           weather: snapshot,
-          conditionScore: scoreConditions(item.species, snapshot, date),
+          conditionScore: scoreMoment(item.species, snapshot, nearest, date),
           pendingEnrichment: false
         });
       } catch {
@@ -925,9 +930,9 @@ export default function App() {
               </div>
               <div className="data-section"><h3>Forêt</h3><div className="metric-row"><span>Formation</span><b>{dataTarget.forestType || dataTarget.name || '—'}</b></div><div className="metric-row"><span>Essence dominante</span><b>{dataTarget.essence || 'Non précisée'}</b></div><div className="metric-row"><span>Code IGN</span><b>{dataTarget.forestCode || '—'}</b></div></div>
               <div className="data-section"><h3>Relief</h3><div className="metric-row"><span>Altitude</span><b>{numberOrDash(dataTarget.elevation)} m</b></div><div className="metric-row"><span>Pente</span><b>{numberOrDash(dataTarget.slope, 1)}°</b></div><div className="metric-row"><span>Exposition</span><b>{aspectLabel(dataTarget.aspect)}</b></div></div>
-              <div className="data-section"><h3>Sol</h3>{dataTarget.soil ? <><div className="metric-row"><span>pH</span><b>{numberOrDash(dataTarget.soil.ph, 1)}</b></div><div className="metric-row"><span>Texture</span><b>{dataTarget.soil.textureClass}</b></div><div className="metric-row"><span>Drainage estimé</span><b>{dataTarget.soil.drainageClass}</b></div><div className="metric-row"><span>Sable</span><b>{numberOrDash(dataTarget.soil.sandPct, 1)} %</b></div><div className="metric-row"><span>Limon</span><b>{numberOrDash(dataTarget.soil.siltPct, 1)} %</b></div><div className="metric-row"><span>Argile</span><b>{numberOrDash(dataTarget.soil.clayPct, 1)} %</b></div><div className="metric-row"><span>Éléments grossiers</span><b>{numberOrDash(dataTarget.soil.coarseFragmentsPct, 1)} %</b></div><div className="metric-row"><span>Réserve en eau estimée</span><b>{numberOrDash(dataTarget.soil.availableWaterPct, 1)} %</b></div></> : <div className="data-unavailable">Données pédologiques structurées indisponibles pour cette parcelle.</div>}</div>
-              <div className="data-section"><h3>Météo utilisée</h3><div className="metric-row"><span>Pluie 3 jours</span><b>{numberOrDash(weather.rain3, 1)} mm</b></div><div className="metric-row"><span>Pluie 7 jours</span><b>{numberOrDash(weather.rain7, 1)} mm</b></div><div className="metric-row"><span>Pluie 14 jours</span><b>{numberOrDash(weather.rain14, 1)} mm</b></div><div className="metric-row"><span>Pluie 30 jours</span><b>{numberOrDash(weather.rain30, 1)} mm</b></div><div className="metric-row"><span>Humidité du sol</span><b>{weather.soilMoisture == null ? '—' : `${(weather.soilMoisture * 100).toFixed(1)} %`}</b></div><div className="metric-row"><span>Température du sol</span><b>{numberOrDash(weather.soilTemp, 1)} °C</b></div><div className="metric-row"><span>Température moyenne 7 j</span><b>{numberOrDash(weather.airTemp7, 1)} °C</b></div></div>
-              <p className="data-note">{isOnline ? 'Le cache est affiché immédiatement puis actualisé silencieusement selon la fraîcheur des sources.' : 'Mode hors ligne : le score utilise les dernières données locales disponibles. Les nouvelles observations modifient immédiatement la correction terrain.'}</p>
+              <div className="data-section"><h3>Sol</h3>{dataTarget.soil ? <><div className="metric-row"><span>pH</span><b>{numberOrDash(dataTarget.soil.ph, 1)}</b></div><div className="metric-row"><span>Texture</span><b>{dataTarget.soil.textureClass}</b></div><div className="metric-row"><span>Drainage estimé</span><b>{dataTarget.soil.drainageClass}</b></div><div className="metric-row"><span>Sable</span><b>{numberOrDash(dataTarget.soil.sandPct, 1)} %</b></div><div className="metric-row"><span>Limon</span><b>{numberOrDash(dataTarget.soil.siltPct, 1)} %</b></div><div className="metric-row"><span>Argile</span><b>{numberOrDash(dataTarget.soil.clayPct, 1)} %</b></div><div className="metric-row"><span>Éléments grossiers</span><b>{numberOrDash(dataTarget.soil.coarseFragmentsPct, 1)} %</b></div><div className="metric-row"><span>Capacité au champ</span><b>{numberOrDash(dataTarget.soil.fieldCapacityPct, 1)} %</b></div><div className="metric-row"><span>Point de flétrissement</span><b>{numberOrDash(dataTarget.soil.wiltingPointPct, 1)} %</b></div><div className="metric-row"><span>Réserve utile potentielle</span><b>{numberOrDash(dataTarget.soil.availableWaterPct, 1)} %</b></div></> : <div className="data-unavailable">Données pédologiques structurées indisponibles pour cette parcelle.</div>}</div>
+              <div className="data-section"><h3>Météo utilisée</h3><div className="metric-row"><span>État hydrique actuel</span><b>{dataTarget.hydricLabel} · {dataTarget.hydricScore}/100</b></div><div className="metric-row"><span>Eau utile disponible</span><b>{dataTarget.hydricRelativeWaterPct == null ? '—' : `${dataTarget.hydricRelativeWaterPct} %`}</b></div><div className="metric-row"><span>Pluie 3 jours</span><b>{numberOrDash(weather.rain3, 1)} mm</b></div><div className="metric-row"><span>Pluie 7 jours</span><b>{numberOrDash(weather.rain7, 1)} mm</b></div><div className="metric-row"><span>Pluie 14 jours</span><b>{numberOrDash(weather.rain14, 1)} mm</b></div><div className="metric-row"><span>Pluie 30 jours</span><b>{numberOrDash(weather.rain30, 1)} mm</b></div><div className="metric-row"><span>Humidité du sol (modèle)</span><b>{weather.soilMoisture == null ? '—' : `${(weather.soilMoisture * 100).toFixed(1)} %`}</b></div><div className="metric-row"><span>Température du sol</span><b>{numberOrDash(weather.soilTemp, 1)} °C</b></div><div className="metric-row"><span>Température moyenne 7 j</span><b>{numberOrDash(weather.airTemp7, 1)} °C</b></div></div>
+              <p className="data-note">{isOnline ? 'Le cache est affiché immédiatement puis actualisé silencieusement. Le score « Moment » intègre maintenant le déficit hydrique relatif du sol : une parcelle structurellement excellente peut donc chuter fortement lorsqu’elle est trop sèche.' : 'Mode hors ligne : le score utilise les dernières données locales disponibles. Les nouvelles observations modifient immédiatement la correction terrain.'}</p>
               <p className="data-credits">Sources : IGN BD Forêt v2 et RGE ALTI · SoilGrids 2.0 / ISRIC · Open-Meteo.</p>
             </>
           )}
