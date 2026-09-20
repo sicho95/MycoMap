@@ -358,6 +358,9 @@ button { color: inherit; border: 0; cursor: pointer; touch-action: manipulation;
 .list-heading b { color: var(--text); font-size: 12px; }
 .list-heading span { font-size: 9px; line-height: 1.35; }
 .observations-heading { margin-top: 10px; }
+.backup-actions { display: grid; gap: 8px; margin-bottom: 8px; }
+.backup-note { color: var(--muted); font-size: 9px; line-height: 1.35; padding: 0 4px; }
+.hidden-input { display: none !important; }
 .favorite-row { min-height: 66px; display: grid; grid-template-columns: 44px 1fr 34px; align-items: center; gap: 9px; border: 1px solid var(--border); border-radius: 15px; padding: 7px; background: var(--button); }
 .favorite-score { width: 42px; font-size: 22px; font-weight: 900; text-align: center; letter-spacing: -.05em; }
 .favorite-row > div:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
