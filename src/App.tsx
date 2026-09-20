@@ -5,6 +5,7 @@ import {
   Crosshair,
   Database,
   Download,
+  Upload,
   Layers3,
   LocateFixed,
   MapPin,
@@ -25,6 +26,7 @@ import { favoriteFromPotential, favoriteId, loadFavorites, persistFavorites } fr
 import { fetchMunicipality } from './geocoding';
 import {
   deleteObservationPhoto,
+  getObservationPhoto,
   formatCacheAge,
   getCachedArea,
   getCachedWeather,
@@ -360,6 +362,7 @@ export default function App() {
   const mapNode = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const photoInput = useRef<HTMLInputElement | null>(null);
+  const backupInput = useRef<HTMLInputElement | null>(null);
   const loadedCenterRef = useRef<LatLng>(FALLBACK);
   const observationsRef = useRef<Observation[]>([]);
   const favoritesRef = useRef<FavoriteSpot[]>([]);
@@ -394,6 +397,7 @@ export default function App() {
   const [selectorLookupLoading, setSelectorLookupLoading] = useState(false);
   const [selectorLookupDone, setSelectorLookupDone] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [backupBusy, setBackupBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [cacheUpdatedAt, setCacheUpdatedAt] = useState<number | null>(null);
@@ -1466,51 +1470,205 @@ export default function App() {
     setObservations((current) => current.filter((candidate) => candidate.id !== item.id));
   }
 
-  async function exportPointsJson() {
-    const exportedAt = new Date();
-    const payload = {
-      format: 'MycoMap',
-      schemaVersion: 1,
-      exportedAt: exportedAt.toISOString(),
-      pointCount: observations.length,
-      favoriteCount: favorites.length,
-      favorites,
-      points: observations.map((item) => ({
-        ...item,
-        photo: item.photoStored ? {
-          storedLocally: true,
-          fileName: item.photoName ?? null,
-          includedInJson: false
-        } : null
-      }))
-    };
-    const json = JSON.stringify(payload, null, 2);
-    const fileName = `mycomap-points-${exportedAt.toISOString().slice(0, 10)}.json`;
-    const blob = new Blob([json], { type: 'application/json' });
+  async function blobToDataUrl(blob: Blob) {
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Lecture photo impossible'));
+      reader.onerror = () => reject(reader.error ?? new Error('Lecture photo impossible'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function dataUrlToFile(dataUrl: string, name: string, type: string) {
+    const response = await fetch(dataUrl);
+    const blob = await response.blob();
+    return new File([blob], name, { type: type || blob.type || 'application/octet-stream' });
+  }
+
+  async function exportBackupJson() {
+    if (backupBusy) return;
+    setBackupBusy(true);
+    setNotice(null);
 
     try {
+      const exportedAt = new Date();
+      const photos: Array<{
+        observationId: string;
+        fileName: string;
+        type: string;
+        size: number;
+        dataUrl: string;
+      }> = [];
+
+      for (const observation of observations) {
+        if (!observation.photoStored) continue;
+        const stored = await getObservationPhoto(observation.id);
+        if (!stored?.blob) continue;
+        photos.push({
+          observationId: observation.id,
+          fileName: stored.name || observation.photoName || `${observation.id}.jpg`,
+          type: stored.type || stored.blob.type || 'image/jpeg',
+          size: stored.size || stored.blob.size,
+          dataUrl: await blobToDataUrl(stored.blob)
+        });
+      }
+
+      const payload = {
+        format: 'MycoMapBackup',
+        schemaVersion: 2,
+        exportedAt: exportedAt.toISOString(),
+        counts: {
+          favorites: favorites.length,
+          observations: observations.length,
+          photos: photos.length
+        },
+        favorites,
+        observations,
+        photos
+      };
+
+      const json = JSON.stringify(payload);
+      const stamp = exportedAt.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const fileName = `mycomap-sauvegarde-${stamp}.json`;
+      const blob = new Blob([json], { type: 'application/json' });
+
       const shareFile = new File([blob], fileName, { type: 'application/json' });
       const shareNavigator = navigator as Navigator & {
         canShare?: (data: ShareData) => boolean;
         share?: (data: ShareData) => Promise<void>;
       };
-      const data: ShareData = { title: 'Sauvegarde MycoMap', files: [shareFile] };
+      const data: ShareData = { title: 'Sauvegarde complète MycoMap', files: [shareFile] };
+
       if (shareNavigator.share && (!shareNavigator.canShare || shareNavigator.canShare(data))) {
-        await shareNavigator.share(data);
+        try {
+          await shareNavigator.share(data);
+          setNotice(`Sauvegarde créée : 1 fichier · ${favorites.length} favoris · ${observations.length} sorties · ${photos.length} photos.`);
+          return;
+        } catch (error) {
+          if (error instanceof DOMException && error.name === 'AbortError') {
+            setNotice('Export annulé.');
+            return;
+          }
+          // Si le partage système n'est pas utilisable, téléchargement direct ci-dessous.
+        }
+      }
+
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+      setNotice(`Sauvegarde créée : 1 fichier · ${favorites.length} favoris · ${observations.length} sorties · ${photos.length} photos.`);
+    } catch {
+      setNotice('Impossible de créer la sauvegarde complète.');
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
+  async function importBackupJson(file: File) {
+    if (backupBusy) return;
+    setBackupBusy(true);
+    setNotice(null);
+
+    try {
+      const raw = JSON.parse(await file.text()) as any;
+      const isV2 = raw?.format === 'MycoMapBackup' && Number(raw?.schemaVersion) >= 2;
+      const isLegacy = raw?.format === 'MycoMap' && Array.isArray(raw?.points);
+      if (!isV2 && !isLegacy) throw new Error('Format MycoMap non reconnu');
+
+      const importedFavorites = Array.isArray(raw.favorites) ? raw.favorites as FavoriteSpot[] : [];
+      const rawObservations = isV2
+        ? (Array.isArray(raw.observations) ? raw.observations : [])
+        : raw.points;
+      const importedObservations = (rawObservations as any[]).map((item) => {
+        const { photo: _legacyPhoto, ...observation } = item ?? {};
+        return observation as Observation;
+      });
+
+      const importedPhotos = isV2 && Array.isArray(raw.photos) ? raw.photos as Array<{
+        observationId: string;
+        fileName?: string;
+        type?: string;
+        dataUrl?: string;
+      }> : [];
+      const photoIds = new Set(importedPhotos.map((item) => item.observationId));
+
+      const confirmed = window.confirm(
+        `Importer cette sauvegarde MycoMap ?\n\n` +
+        `${importedFavorites.length} favoris · ${importedObservations.length} sorties · ${importedPhotos.length} photos\n\n` +
+        `L'import est non destructif : il fusionne avec les données présentes. Pour un même identifiant, la sauvegarde met à jour l'élément existant.`
+      );
+      if (!confirmed) {
+        setNotice('Import annulé.');
         return;
       }
-    } catch {
-      // Le téléchargement classique ci-dessous reste disponible.
-    }
 
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+      const currentObservationById = new Map(observationsRef.current.map((item) => [item.id, item] as const));
+      const normalizedObservations = importedObservations
+        .filter((item) => item && typeof item.id === 'string' && Number.isFinite(item.lat) && Number.isFinite(item.lon))
+        .map((item) => {
+          const current = currentObservationById.get(item.id);
+          return {
+            ...item,
+            photoStored: photoIds.has(item.id) || current?.photoStored === true,
+            photoName: photoIds.has(item.id) ? (item.photoName ?? importedPhotos.find((photo) => photo.observationId === item.id)?.fileName) : (item.photoName ?? current?.photoName)
+          };
+        });
+
+      let restoredPhotos = 0;
+      for (const photo of importedPhotos) {
+        if (!photo?.observationId || typeof photo.dataUrl !== 'string' || !photo.dataUrl.startsWith('data:')) continue;
+        try {
+          const restored = await dataUrlToFile(
+            photo.dataUrl,
+            photo.fileName || `${photo.observationId}.jpg`,
+            photo.type || 'image/jpeg'
+          );
+          if (await storeObservationPhoto(photo.observationId, restored)) restoredPhotos += 1;
+        } catch {
+          // Une photo corrompue ne bloque pas la restauration du reste de la sauvegarde.
+        }
+      }
+
+      const favoriteMap = new Map(favoritesRef.current.map((item) => [item.id, item] as const));
+      for (const favorite of importedFavorites) {
+        if (!favorite || typeof favorite.id !== 'string' || !Number.isFinite(favorite.lat) || !Number.isFinite(favorite.lon)) continue;
+        favoriteMap.set(favorite.id, favorite);
+      }
+
+      const observationMap = new Map(observationsRef.current.map((item) => [item.id, item] as const));
+      for (const observation of normalizedObservations) observationMap.set(observation.id, observation);
+
+      const nextFavorites = [...favoriteMap.values()];
+      const nextObservations = [...observationMap.values()].sort(
+        (a, b) => new Date(b.observedAt).getTime() - new Date(a.observedAt).getTime()
+      );
+
+      favoritesRef.current = nextFavorites;
+      observationsRef.current = nextObservations;
+      setFavorites(nextFavorites);
+      setObservations(nextObservations);
+
+      if (navigator.onLine) {
+        void enrichFavoriteCommunes();
+        void enrichObservationCommunes();
+      }
+
+      setNotice(
+        isLegacy
+          ? `Ancienne sauvegarde importée : ${nextFavorites.length} favoris · ${nextObservations.length} sorties. Les anciens exports ne contenaient pas les photos.`
+          : `Sauvegarde restaurée : ${nextFavorites.length} favoris · ${nextObservations.length} sorties · ${restoredPhotos} photos restaurées.`
+      );
+    } catch {
+      setNotice('Import impossible : ce fichier JSON n’est pas une sauvegarde MycoMap valide.');
+    } finally {
+      setBackupBusy(false);
+      if (backupInput.current) backupInput.current.value = '';
+    }
   }
 
   const topScore = visiblePotentials.length ? Math.max(...visiblePotentials.map((item) => item.displayScore)) : null;
@@ -1606,7 +1764,12 @@ export default function App() {
         <section className="sheet sheet-list" aria-modal="true">
           <div className="grabber" />
           <div className="sheet-title"><div><small>Privé sur cet appareil</small><h2>Mes coins & sorties</h2></div><button className="icon-button" onClick={closeSheet}><X size={20} /></button></div>
-          <button className="secondary-button export-button" disabled={observations.length === 0 && favorites.length === 0} onClick={() => void exportPointsJson()}><Download size={17} /> Exporter points & favoris en JSON</button>
+          <div className="backup-actions">
+            <button className="secondary-button export-button" disabled={backupBusy || (observations.length === 0 && favorites.length === 0)} onClick={() => void exportBackupJson()}><Download size={17} /> {backupBusy ? 'Sauvegarde en cours…' : 'Exporter sauvegarde complète'}</button>
+            <input ref={backupInput} className="hidden-input" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackupJson(file); }} />
+            <button className="secondary-button export-button" disabled={backupBusy} onClick={() => backupInput.current?.click()}><Upload size={17} /> Importer une sauvegarde JSON</button>
+            <small className="backup-note">Un seul fichier contient favoris, sorties et photos. Les caches cartographiques/météo ne sont pas sauvegardés car MycoMap les reconstruit automatiquement.</small>
+          </div>
           <div className="favorites-block">
             <div className="list-heading"><div><b>Favoris surveillés</b><span>Alerte à 50/100 puis par paliers de +5 · retour sous 50 = réarmement</span></div><Bell size={17} /></div>
             {favorites.length === 0 && <div className="empty compact">Aucun coin surveillé. Sélectionne une parcelle puis touche l’étoile.</div>}
